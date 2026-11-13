@@ -1,0 +1,5 @@
+{"level":"INFO","msg":"staged","item_id":"itm-0101","outcome":"complete"}
+{"level":"WARN","msg":"retry","code":"E_TIMEOUT","reason":"upstream_timeout","attempt":1,"delay_ms":1000,"staged":1}
+{"level":"WARN","msg":"retry","code":"E_TIMEOUT","reason":"upstream_timeout","attempt":2,"delay_ms":2000,"staged":1}
+{"level":"WARN","msg":"retry","code":"E_TIMEOUT","reason":"upstream_timeout","attempt":3,"delay_ms":4000,"staged":1}
+{"level":"INFO","msg":"acknowledged","item_id":"itm-0101","outcome":"complete"}

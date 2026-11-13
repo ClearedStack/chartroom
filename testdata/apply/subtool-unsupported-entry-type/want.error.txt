@@ -1,0 +1,1 @@
+E_NEEDS_SUBTOOL unsupported_entry_type action: the catalog entry type is not supported

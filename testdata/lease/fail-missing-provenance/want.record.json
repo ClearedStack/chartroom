@@ -1,0 +1,13 @@
+{
+  "contract_version": "v1",
+  "lease_id": "lease-0004",
+  "item_id": "itm-0102",
+  "priority": "normal",
+  "outcome": "fail",
+  "report": {
+    "code": "E_PARSE",
+    "reason": "missing_provenance",
+    "field": "provenance",
+    "message": "the provenance block is missing or incomplete"
+  }
+}

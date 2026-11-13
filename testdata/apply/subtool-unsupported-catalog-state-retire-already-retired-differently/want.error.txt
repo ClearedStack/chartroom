@@ -1,0 +1,1 @@
+E_NEEDS_SUBTOOL unsupported_catalog_state slug: no rule covers the current catalog state of this entry

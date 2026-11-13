@@ -1,0 +1,1 @@
+E_PARSE invalid_metadata link.name: the catalog metadata is not valid

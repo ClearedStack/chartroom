@@ -1,0 +1,9 @@
+{
+  "lease_id": "lease-0006",
+  "priority": "normal",
+  "item": "not an item",
+  "catalog": {
+    "contract_version": "v1",
+    "entries": []
+  }
+}

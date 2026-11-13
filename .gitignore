@@ -1,0 +1,4 @@
+/chartroom
+/dist/
+*.test
+*.out
