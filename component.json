@@ -1,0 +1,25 @@
+{
+  "slug": "chartroom",
+  "name": "Chartroom",
+  "formerly": "cs-08-catalog",
+  "earlierNames": [
+    "Gazette"
+  ],
+  "kind": "worker",
+  "stage": 8,
+  "namespace": "cs-workers",
+  "responsibility": "Publishes, links, merges and retires catalog entries.",
+  "interfaces": [
+    "Leases verified, linked, merged and retired items from Muster",
+    "Writes catalog entries to the hub repository in Plainforge"
+  ],
+  "repository": "chartroom",
+  "image": "chartroom",
+  "dependsOn": [
+    "muster",
+    "plainforge"
+  ],
+  "memory": "30 MiB",
+  "version": "v0.1.0-draft",
+  "subTools": []
+}
