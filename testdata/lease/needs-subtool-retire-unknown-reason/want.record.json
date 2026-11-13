@@ -1,0 +1,10 @@
+{
+  "contract": "v1",
+  "lease": "PA-0101.12.1",
+  "id": "PA-0101",
+  "lane": "urgent",
+  "outcome": "needs_subtool",
+  "code": "E_NEEDS_SUBTOOL",
+  "reason": "unsupported_value",
+  "field": "retire.reason"
+}

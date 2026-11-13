@@ -1,0 +1,15 @@
+{
+  "lease": "incident:PA-0001.2.1",
+  "kind": "incident",
+  "id": "PA-0001",
+  "state": "recorded",
+  "lane": "normal",
+  "attempt": 1,
+  "expires": "2026-01-05T09:01:00Z",
+  "incident": {
+    "id": "PA-0001",
+    "worker": "sextant",
+    "code": "E_PARSE",
+    "state": "recorded"
+  }
+}

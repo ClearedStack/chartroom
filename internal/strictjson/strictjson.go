@@ -53,6 +53,37 @@ func Decode(data []byte, limit int, v any) error {
 	return nil
 }
 
+// TopLevel returns the top-level fields of a JSON object without reading
+// into them. It refuses what Check refuses, except that only the top-level
+// keys have to be unique: what is inside a field is for whoever reads that
+// field to check.
+func TopLevel(data []byte, limit int) (map[string]json.RawMessage, error) {
+	if len(data) == 0 || len(data) > limit || !utf8.Valid(data) || !json.Valid(data) {
+		return nil, ErrMalformed
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return nil, ErrMalformed
+	}
+	out := make(map[string]json.RawMessage)
+	for dec.More() {
+		tok, err := dec.Token()
+		key, ok := tok.(string)
+		if err != nil || !ok {
+			return nil, ErrMalformed
+		}
+		if _, dup := out[key]; dup {
+			return nil, ErrMalformed
+		}
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return nil, ErrMalformed
+		}
+		out[key] = value
+	}
+	return out, nil
+}
+
 type frame struct {
 	object  bool
 	wantKey bool

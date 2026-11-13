@@ -27,19 +27,46 @@ const (
 // the names are carried as they come and only have to differ.
 const RequiredConditions = 5
 
-// Transition is one row of the specification's state table.
+// Transition is one of Chartroom's rows in Muster's table of queue steps:
+// the state an item is held in and the state the step completes it to.
 type Transition struct {
 	From string
 	To   string
 }
 
-// Transitions maps each action to the one state change it is allowed to
-// make.
+// Transitions maps each action to its row in Muster contract v1. Only the
+// publish step changes the state. Countersign has already moved a linked
+// or merged item, and Tidegauge a retired one, before Chartroom lists it.
 var Transitions = map[string]Transition{
 	ActionPublish: {From: "building", To: catalog.StatusLive},
-	ActionLink:    {From: "scored", To: catalog.StatusLinked},
-	ActionMerge:   {From: "scored", To: catalog.StatusMerged},
-	ActionRetire:  {From: catalog.StatusLive, To: catalog.StatusRetired},
+	ActionLink:    {From: catalog.StatusLinked, To: catalog.StatusLinked},
+	ActionMerge:   {From: catalog.StatusMerged, To: catalog.StatusMerged},
+	ActionRetire:  {From: catalog.StatusRetired, To: catalog.StatusRetired},
+}
+
+// ActionFor returns the action for an item held in the given state.
+func ActionFor(state string) (string, bool) {
+	for _, action := range []string{ActionPublish, ActionLink, ActionMerge, ActionRetire} {
+		if Transitions[action].From == state {
+			return action, true
+		}
+	}
+	return "", false
+}
+
+// ValidItemID reports whether s is an item identifier as Muster hands them
+// out: "PA-" and four digits, or five to nine digits with no leading zero.
+func ValidItemID(s string) bool {
+	if len(s) < 7 || len(s) > 12 || s[:3] != "PA-" {
+		return false
+	}
+	digits := s[3:]
+	for i := 0; i < len(digits); i++ {
+		if digits[i] < '0' || digits[i] > '9' {
+			return false
+		}
+	}
+	return len(digits) == 4 || digits[0] != '0'
 }
 
 // EntryFields is the text every new entry carries.
@@ -67,32 +94,32 @@ type Attestation struct {
 // Item is one leased item: a decision that is already made upstream and
 // that Chartroom only has to publish.
 type Item struct {
-	ContractVersion string              `json:"contract_version"`
-	ItemID          string              `json:"item_id"`
-	State           string              `json:"state"`
-	Action          string              `json:"action"`
-	Slug            string              `json:"slug"`
-	Entry           *EntryFields        `json:"entry,omitempty"`
-	Publish         *Publish            `json:"publish,omitempty"`
-	Link            *catalog.Link       `json:"link,omitempty"`
-	Merge           *catalog.Merge      `json:"merge,omitempty"`
-	Retire          *catalog.Retirement `json:"retire,omitempty"`
-	Provenance      *catalog.Provenance `json:"provenance,omitempty"`
-	Attestation     *Attestation        `json:"attestation,omitempty"`
+	Contract    string              `json:"contract"`
+	ID          string              `json:"id"`
+	State       string              `json:"state"`
+	Action      string              `json:"action"`
+	Slug        string              `json:"slug"`
+	Entry       *EntryFields        `json:"entry,omitempty"`
+	Publish     *Publish            `json:"publish,omitempty"`
+	Link        *catalog.Link       `json:"link,omitempty"`
+	Merge       *catalog.Merge      `json:"merge,omitempty"`
+	Retire      *catalog.Retirement `json:"retire,omitempty"`
+	Provenance  *catalog.Provenance `json:"provenance,omitempty"`
+	Attestation *Attestation        `json:"attestation,omitempty"`
 }
 
-// Change is what one item does to the catalog. It is what the command
-// prints and what the worker hands to Muster.
+// Change is what one item does to the catalog. The command prints it. The
+// worker hands Muster its To state and its After entry.
 type Change struct {
-	ContractVersion string         `json:"contract_version"`
-	ItemID          string         `json:"item_id"`
-	Action          string         `json:"action"`
-	From            string         `json:"from"`
-	To              string         `json:"to"`
-	Slug            string         `json:"slug"`
-	Changed         bool           `json:"changed"`
-	Before          *catalog.Entry `json:"before"`
-	After           *catalog.Entry `json:"after"`
+	Contract string         `json:"contract"`
+	ID       string         `json:"id"`
+	Action   string         `json:"action"`
+	From     string         `json:"from"`
+	To       string         `json:"to"`
+	Slug     string         `json:"slug"`
+	Changed  bool           `json:"changed"`
+	Before   *catalog.Entry `json:"before"`
+	After    *catalog.Entry `json:"after"`
 }
 
 // Encode writes the change in canonical form.
@@ -106,17 +133,17 @@ func Parse(data []byte) (*Item, error) {
 		return nil, jsonError(err)
 	}
 	var probe struct {
-		ContractVersion *string `json:"contract_version"`
-		Action          *string `json:"action"`
+		Contract *string `json:"contract"`
+		Action   *string `json:"action"`
 	}
 	if err := json.Unmarshal(data, &probe); err != nil {
 		return nil, cserr.New(cserr.MalformedJSON)
 	}
-	if probe.ContractVersion == nil || *probe.ContractVersion == "" {
-		return nil, cserr.At(cserr.InvalidMetadata, "contract_version")
+	if probe.Contract == nil || *probe.Contract == "" {
+		return nil, cserr.At(cserr.InvalidMetadata, "contract")
 	}
-	if *probe.ContractVersion != catalog.ContractVersion {
-		return nil, cserr.At(cserr.SchemaVersionMismatch, "contract_version")
+	if *probe.Contract != catalog.ContractVersion {
+		return nil, cserr.At(cserr.SchemaVersionMismatch, "contract")
 	}
 	if probe.Action == nil || *probe.Action == "" {
 		return nil, cserr.At(cserr.InvalidMetadata, "action")
@@ -146,8 +173,8 @@ func invalid(field string) error { return cserr.At(cserr.InvalidMetadata, field)
 // validate checks the item against the contract, in a fixed order so the
 // same broken item always reports the same field.
 func (it *Item) validate() error {
-	if !catalog.ValidSlug(it.ItemID) {
-		return invalid("item_id")
+	if !ValidItemID(it.ID) {
+		return invalid("id")
 	}
 	if it.State == "" {
 		return invalid("state")
@@ -284,60 +311,75 @@ func (it *Item) checkAttestation() error {
 	return nil
 }
 
-// Apply works out the change a parsed item makes to a catalog. It does not
-// alter cat. An item whose result is already in the catalog gives a change
-// with Changed false, so a retry is harmless. Any other clash between the
-// item and the catalog has no rule and is E_NEEDS_SUBTOOL.
-func Apply(cat *catalog.Catalog, it *Item) (*Change, error) {
+// start returns the change for an item with everything but the entries
+// filled in.
+func start(it *Item) *Change {
 	tr := Transitions[it.Action]
-	ch := &Change{
-		ContractVersion: catalog.ContractVersion,
-		ItemID:          it.ItemID,
-		Action:          it.Action,
-		From:            tr.From,
-		To:              tr.To,
-		Slug:            it.Slug,
+	return &Change{
+		Contract: catalog.ContractVersion,
+		ID:       it.ID,
+		Action:   it.Action,
+		From:     tr.From,
+		To:       tr.To,
+		Slug:     it.Slug,
 	}
-	existing := cat.Find(it.Slug)
-	ch.Before = existing
+}
 
-	if it.Action == ActionRetire {
-		switch {
-		case existing == nil:
-			return nil, cserr.At(cserr.UnsupportedCatalogState, "slug")
-		case existing.Status == catalog.StatusLive:
-			after := existing.Clone()
-			after.Status = catalog.StatusRetired
-			after.Retirement = &catalog.Retirement{Reason: it.Retire.Reason, Note: it.Retire.Note}
-			ch.After = after
-			ch.Changed = true
-		case existing.Status == catalog.StatusRetired && *existing.Retirement == *it.Retire:
-			ch.After = existing.Clone()
-		default:
-			return nil, cserr.At(cserr.UnsupportedCatalogState, "slug")
-		}
-		return ch, nil
-	}
-
-	after := &catalog.Entry{
+// build makes the entry a publish, link or merge item asks for.
+func build(it *Item) *catalog.Entry {
+	e := &catalog.Entry{
 		Slug:       it.Slug,
-		Status:     tr.To,
+		Status:     Transitions[it.Action].To,
 		Title:      it.Entry.Title,
 		Summary:    it.Entry.Summary,
 		Provenance: it.Provenance.Clone(),
 	}
 	switch it.Action {
 	case ActionPublish:
-		after.Repository = it.Publish.Repository
+		e.Repository = it.Publish.Repository
 	case ActionLink:
-		after.Link = &catalog.Link{Name: it.Link.Name, URL: it.Link.URL}
+		e.Link = &catalog.Link{Name: it.Link.Name, URL: it.Link.URL}
 	case ActionMerge:
-		after.Merge = &catalog.Merge{Parent: it.Merge.Parent, Note: it.Merge.Note}
+		e.Merge = &catalog.Merge{Parent: it.Merge.Parent, Note: it.Merge.Note}
 	}
-	ch.After = after
+	return e
+}
 
+// retire archives a live entry, keeping everything it had and adding the
+// retirement note. A retirement that is already recorded is left as it is.
+func retire(ch *Change, existing *catalog.Entry, it *Item) (*Change, error) {
+	switch {
+	case existing == nil:
+		return nil, cserr.At(cserr.UnsupportedCatalogState, "slug")
+	case existing.Status == catalog.StatusLive:
+		after := existing.Clone()
+		after.Status = catalog.StatusRetired
+		after.Retirement = &catalog.Retirement{Reason: it.Retire.Reason, Note: it.Retire.Note}
+		ch.After = after
+		ch.Changed = true
+	case existing.Status == catalog.StatusRetired && *existing.Retirement == *it.Retire:
+		ch.After = existing.Clone()
+	default:
+		return nil, cserr.At(cserr.UnsupportedCatalogState, "slug")
+	}
+	return ch, nil
+}
+
+// Apply works out the change a parsed item makes to a whole catalog. It
+// does not alter cat. An item whose result is already in the catalog gives
+// a change with Changed false, so a retry is harmless. Any other clash
+// between the item and the catalog has no rule and is E_NEEDS_SUBTOOL: the
+// entry under that slug may belong to another item.
+func Apply(cat *catalog.Catalog, it *Item) (*Change, error) {
+	ch := start(it)
+	existing := cat.Find(it.Slug)
+	ch.Before = existing
+	if it.Action == ActionRetire {
+		return retire(ch, existing, it)
+	}
+	ch.After = build(it)
 	if existing != nil {
-		if catalog.Equal(existing, after) {
+		if catalog.Equal(existing, ch.After) {
 			return ch, nil
 		}
 		return nil, cserr.At(cserr.UnsupportedCatalogState, "slug")
@@ -349,6 +391,28 @@ func Apply(cat *catalog.Catalog, it *Item) (*Change, error) {
 		}
 	}
 	ch.Changed = true
+	return ch, nil
+}
+
+// ApplyOwn works out the change for the worker, which sees one item and
+// not the catalog. own is the entry Chartroom published for this same item
+// before, or nil. A publish, link or merge replaces it, as Muster replaces
+// a worker's earlier result. A retirement needs it: there is nothing to
+// retire otherwise.
+//
+// The worker cannot see other items, so it cannot check that a merge's
+// parent is live. Apply can.
+func ApplyOwn(own *catalog.Entry, it *Item) (*Change, error) {
+	ch := start(it)
+	ch.Before = own.Clone()
+	if it.Action == ActionRetire {
+		if own != nil && own.Slug != it.Slug {
+			return nil, cserr.At(cserr.UnsupportedCatalogState, "slug")
+		}
+		return retire(ch, own.Clone(), it)
+	}
+	ch.After = build(it)
+	ch.Changed = !catalog.Equal(own, ch.After)
 	return ch, nil
 }
 

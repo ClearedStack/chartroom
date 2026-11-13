@@ -6,13 +6,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/ClearedStack/chartroom/internal/muster"
 )
 
-func complete(lease, priority string) Record {
-	return Record{ContractVersion: "v1", LeaseID: lease, ItemID: "itm-1", Priority: priority,
-		Outcome: OutcomeComplete, Change: json.RawMessage(`{"slug": "a-tool"}`)}
+func complete(lease, lane string) Record {
+	return Record{Contract: "v1", Lease: lease, ID: "PA-0001", Lane: lane,
+		Outcome: OutcomeComplete, State: "live", Result: json.RawMessage(`{"slug": "a-tool"}`)}
 }
 
 func files(t *testing.T, dir string) []string {
@@ -34,8 +32,8 @@ func TestPutSurvivesReopen(t *testing.T) {
 	if err != nil || discarded != 0 || s.Len() != 0 {
 		t.Fatalf("Open: %v, %d discarded, %d records", err, discarded, s.Len())
 	}
-	report := Record{ContractVersion: "v1", LeaseID: "lease-2", Priority: "normal", Outcome: OutcomeFail,
-		Report: &muster.Report{Code: "E_PARSE", Reason: "malformed_json", Message: "the data is not well-formed JSON"}}
+	report := Record{Contract: "v1", Lease: "lease-2", Lane: "normal", Outcome: OutcomeFail,
+		Code: "E_PARSE", Reason: "malformed_json"}
 	for _, r := range []Record{complete("lease-1", "backfill"), report, complete("lease-3", "urgent")} {
 		if err := s.Put(r); err != nil {
 			t.Fatal(err)
@@ -50,14 +48,14 @@ func TestPutSurvivesReopen(t *testing.T) {
 		t.Fatalf("reopen: %v, %d discarded", err, discarded)
 	}
 	pending := again.Pending()
-	if len(pending) != 3 || pending[0].LeaseID != "lease-3" || pending[1].LeaseID != "lease-2" || pending[2].LeaseID != "lease-1" {
+	if len(pending) != 3 || pending[0].Lease != "lease-3" || pending[1].Lease != "lease-2" || pending[2].Lease != "lease-1" {
 		t.Fatalf("pending after reopen = %+v", pending)
 	}
-	if string(pending[0].Change) != `{"slug":"a-tool"}` {
-		t.Errorf("change read back as %s", pending[0].Change)
+	if string(pending[0].Result) != `{"slug":"a-tool"}` || pending[0].State != "live" {
+		t.Errorf("result read back as %s, state %q", pending[0].Result, pending[0].State)
 	}
-	if pending[1].Report == nil || pending[1].Report.Reason != "malformed_json" {
-		t.Errorf("report read back as %+v", pending[1].Report)
+	if pending[1].Code != "E_PARSE" || pending[1].Reason != "malformed_json" {
+		t.Errorf("report read back as %+v", pending[1])
 	}
 
 	if err := again.Remove("lease-3"); err != nil {
@@ -83,7 +81,7 @@ func TestPendingOrder(t *testing.T) {
 	}
 	var got []string
 	for _, r := range s.Pending() {
-		got = append(got, r.LeaseID)
+		got = append(got, r.Lease)
 	}
 	if want := "u1 u2 n1 n2 b1 x1"; strings.Join(got, " ") != want {
 		t.Errorf("order = %v, want %s", got, want)
@@ -95,7 +93,7 @@ func TestPutReplacesTheSameLease(t *testing.T) {
 	s, _, _ := Open(dir)
 	_ = s.Put(complete("lease-1", "normal"))
 	_ = s.Put(complete("lease-1", "urgent"))
-	if s.Len() != 1 || len(files(t, dir)) != 1 || s.Pending()[0].Priority != "urgent" {
+	if s.Len() != 1 || len(files(t, dir)) != 1 || s.Pending()[0].Lane != "urgent" {
 		t.Errorf("a second Put for the same lease did not replace the first")
 	}
 }
@@ -139,9 +137,9 @@ func TestOpenCleansUp(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write("0123.json.tmp", `{"half":`)              // left by a crash mid-write
-	write("aaaa.json", `{"not": "a record"}`)       // not a record
-	write("bbbb.json", `{"contract_version":"v1",`) // truncated
+	write("0123.json.tmp", `{"half":`)        // left by a crash mid-write
+	write("aaaa.json", `{"not": "a record"}`) // not a record
+	write("bbbb.json", `{"contract":"v1",`)   // truncated
 	valid, _ := os.ReadFile(filepath.Join(dir, good))
 	write("cccc.json", string(valid)) // a record under the wrong name
 	write("notes.txt", "left alone")
@@ -178,7 +176,18 @@ func TestErrorsDoNotNameThePath(t *testing.T) {
 	if s.Len() != 0 {
 		t.Error("a record that was not written is counted as staged")
 	}
-	if err := s.Put(Record{ContractVersion: "v1", LeaseID: "lease-1", Outcome: "other"}); err != ErrUnusable {
-		t.Errorf("Put of an invalid record: %v", err)
+	for _, bad := range []Record{
+		{Contract: "v1", Lease: "lease-1", Outcome: "other"},
+		{Contract: "v1", Lease: "", Outcome: OutcomeComplete, State: "live", Result: json.RawMessage(`{}`)},
+		{Contract: "v2", Lease: "lease-1", Outcome: OutcomeComplete, State: "live", Result: json.RawMessage(`{}`)},
+		{Contract: "v1", Lease: "lease-1", Outcome: OutcomeComplete, Result: json.RawMessage(`{}`)},
+		{Contract: "v1", Lease: "lease-1", Outcome: OutcomeComplete, State: "live"},
+		{Contract: "v1", Lease: "lease-1", Outcome: OutcomeFail, Code: "E_NEEDS_SUBTOOL", Reason: "r"},
+		{Contract: "v1", Lease: "lease-1", Outcome: OutcomeFail, Code: "E_PARSE"},
+		{Contract: "v1", Lease: "lease-1", Outcome: OutcomeNeedsSubtool, Code: "E_PARSE", Reason: "r"},
+	} {
+		if err := s.Put(bad); err != ErrUnusable {
+			t.Errorf("Put of an invalid record %+v: %v", bad, err)
+		}
 	}
 }

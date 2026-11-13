@@ -15,8 +15,7 @@ import (
 	"github.com/ClearedStack/chartroom/internal/catalog"
 )
 
-// The paths of the five calls. They are provisional: Muster does not exist
-// yet and its own specification will fix them.
+// The paths of the five worker calls.
 const (
 	PathLease        = "/v1/lease"
 	PathHeartbeat    = "/v1/heartbeat"
@@ -25,6 +24,9 @@ const (
 	PathNeedsSubtool = "/v1/needs_subtool"
 )
 
+// MaxRequestBytes is the largest request body Muster accepts from a worker.
+const MaxRequestBytes = 64 << 10
+
 // MaxResponseBytes is the most Chartroom will read from one Muster answer.
 const MaxResponseBytes = 2 << 20
 
@@ -32,34 +34,42 @@ const MaxResponseBytes = 2 << 20
 // The address itself is never put in the error.
 var ErrBadAddress = errors.New("the Muster address is not a usable http or https address")
 
+// The request bodies. Muster refuses a body with a field the call does not
+// define, so each has exactly the fields the contract lists, in its order.
 type leaseRequest struct {
-	Worker          string `json:"worker"`
-	ContractVersion string `json:"contract_version"`
-	Max             int    `json:"max"`
-}
-
-type leaseResponse struct {
-	Leases []Lease `json:"leases"`
+	Contract string `json:"contract"`
 }
 
 type heartbeatRequest struct {
-	LeaseID string `json:"lease_id"`
+	Contract string `json:"contract"`
+	Lease    string `json:"lease"`
 }
 
 type completeRequest struct {
-	LeaseID string          `json:"lease_id"`
-	Change  json.RawMessage `json:"change"`
+	Contract string          `json:"contract"`
+	Lease    string          `json:"lease"`
+	State    string          `json:"state"`
+	Result   json.RawMessage `json:"result,omitempty"`
 }
 
-type reportRequest struct {
-	LeaseID string `json:"lease_id"`
-	Report
+type failRequest struct {
+	Contract string `json:"contract"`
+	Lease    string `json:"lease"`
+	Code     string `json:"code"`
+}
+
+// refusal is the body of every refusal: one of the three public codes, a
+// fixed word a program can act on and a fixed sentence for a person.
+type refusal struct {
+	Error  string `json:"error"`
+	Cause  string `json:"cause"`
+	Reason string `json:"reason"`
 }
 
 // HTTP is the Muster client used in the cluster. It identifies itself with
 // the pod's ServiceAccount token, read fresh for every call because the
-// token is rotated. Its errors are the three fixed errors of this package
-// and nothing else: no address, no token, no text from the network stack.
+// token is rotated. Its errors are the fixed errors of this package and
+// nothing else: no address, no token, no text from the network.
 type HTTP struct {
 	base      string
 	tokenFile string
@@ -97,80 +107,136 @@ func NewHTTP(baseURL, tokenFile string, timeout time.Duration) (*HTTP, error) {
 	}, nil
 }
 
-// post sends one call. When out is not nil a 200 answer is decoded into it.
-func (h *HTTP) post(ctx context.Context, path string, in, out any) error {
+// encode writes a request body: compact, fields in the contract's order,
+// and with no HTML escaping, so a result takes no more room than it needs.
+func encode(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
+
+// post sends one call and returns the status and body of the answer.
+func (h *HTTP) post(ctx context.Context, path string, in any) (int, []byte, error) {
 	token, err := os.ReadFile(h.tokenFile)
 	if err != nil || len(bytes.TrimSpace(token)) == 0 {
-		return ErrUnavailable
+		return 0, nil, ErrUnavailable
 	}
-	body, err := json.Marshal(in)
-	if err != nil {
-		return ErrBadResponse
+	body, err := encode(in)
+	if err != nil || len(body) > MaxRequestBytes {
+		// Muster would refuse it as too large. Do not send it.
+		return 0, nil, ErrRefused
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.base+path, bytes.NewReader(body))
 	if err != nil {
-		return ErrUnavailable
+		return 0, nil, ErrUnavailable
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+string(bytes.TrimSpace(token)))
 	resp, err := h.client.Do(req)
 	if err != nil {
-		return ErrUnavailable
+		return 0, nil, ErrUnavailable
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, MaxResponseBytes+1))
 	if err != nil {
-		return ErrUnavailable
+		return 0, nil, ErrUnavailable
 	}
-	switch resp.StatusCode {
-	case http.StatusOK:
-		if out == nil {
-			return nil
-		}
-		if len(data) > MaxResponseBytes || json.Unmarshal(data, out) != nil {
-			return ErrBadResponse
-		}
-		return nil
-	case http.StatusNoContent:
-		return nil
-	case http.StatusNotFound, http.StatusConflict, http.StatusGone:
-		if path == PathLease {
-			return ErrUnavailable
-		}
-		return ErrLeaseGone
+	if len(data) > MaxResponseBytes {
+		return 0, nil, ErrBadResponse
+	}
+	return resp.StatusCode, data, nil
+}
+
+// decodeExact decodes one JSON value into v and refuses a field v does not
+// define or anything after the value.
+func decodeExact(data []byte, v any) bool {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if dec.Decode(v) != nil {
+		return false
+	}
+	_, err := dec.Token()
+	return err == io.EOF
+}
+
+// refused turns an answer that is not a success into one of the fixed
+// errors. It goes by the status and the cause, as the contract intends,
+// and trusts a refusal only if it has the contract's exact shape.
+func refused(status int, body []byte) error {
+	var r refusal
+	known := decodeExact(body, &r) &&
+		(r.Error == "E_TIMEOUT" || r.Error == "E_PARSE" || r.Error == "E_NEEDS_SUBTOOL") && r.Cause != ""
+	switch {
+	case status >= 200 && status < 300:
+		// A success the contract does not define.
+		return ErrBadResponse
+	case !known:
+		return ErrUnavailable
+	case status == http.StatusConflict && r.Cause == "lease_not_held":
+		return ErrLeaseNotHeld
+	case status == http.StatusConflict && r.Cause == "move_not_allowed":
+		return ErrMoveNotAllowed
+	case status == http.StatusUnprocessableEntity && r.Cause == "unknown_contract":
+		return ErrUnknownContract
+	case status >= 500 || status == http.StatusTooManyRequests || r.Error == "E_TIMEOUT":
+		return ErrUnavailable
+	case status >= 400:
+		return ErrRefused
 	}
 	return ErrUnavailable
 }
 
-// Lease asks Muster for up to max items.
-func (h *HTTP) Lease(ctx context.Context, max int) ([]Lease, error) {
-	var resp leaseResponse
-	req := leaseRequest{Worker: Worker, ContractVersion: catalog.ContractVersion, Max: max}
-	if err := h.post(ctx, PathLease, req, &resp); err != nil {
+// Lease asks Muster for the next step.
+func (h *HTTP) Lease(ctx context.Context) (*Grant, error) {
+	status, body, err := h.post(ctx, PathLease, leaseRequest{Contract: catalog.ContractVersion})
+	if err != nil {
 		return nil, err
 	}
-	if len(resp.Leases) > max {
-		return nil, ErrBadResponse
+	switch status {
+	case http.StatusNoContent:
+		return nil, nil
+	case http.StatusOK:
+		var g Grant
+		if !decodeExact(body, &g) || g.Lease == "" {
+			return nil, ErrBadResponse
+		}
+		return &g, nil
 	}
-	return resp.Leases, nil
+	return nil, refused(status, body)
 }
 
-// Heartbeat keeps a lease alive.
-func (h *HTTP) Heartbeat(ctx context.Context, leaseID string) error {
-	return h.post(ctx, PathHeartbeat, heartbeatRequest{LeaseID: leaseID}, nil)
+// result sends a call whose answer only has to be a 200.
+func (h *HTTP) result(ctx context.Context, path string, in any) error {
+	status, body, err := h.post(ctx, path, in)
+	if err != nil {
+		return err
+	}
+	if status == http.StatusOK {
+		return nil
+	}
+	return refused(status, body)
 }
 
-// Complete hands over the catalog change for a lease.
-func (h *HTTP) Complete(ctx context.Context, leaseID string, change json.RawMessage) error {
-	return h.post(ctx, PathComplete, completeRequest{LeaseID: leaseID, Change: change}, nil)
+// Heartbeat keeps a lease.
+func (h *HTTP) Heartbeat(ctx context.Context, lease string) error {
+	return h.result(ctx, PathHeartbeat, heartbeatRequest{Contract: catalog.ContractVersion, Lease: lease})
 }
 
-// Fail reports that the item's data was broken.
-func (h *HTTP) Fail(ctx context.Context, leaseID string, r Report) error {
-	return h.post(ctx, PathFail, reportRequest{LeaseID: leaseID, Report: r}, nil)
+// Complete reports a finished step.
+func (h *HTTP) Complete(ctx context.Context, lease, state string, result json.RawMessage) error {
+	return h.result(ctx, PathComplete, completeRequest{Contract: catalog.ContractVersion, Lease: lease, State: state, Result: result})
+}
+
+// Fail reports E_TIMEOUT or E_PARSE for a step.
+func (h *HTTP) Fail(ctx context.Context, lease, code string) error {
+	return h.result(ctx, PathFail, failRequest{Contract: catalog.ContractVersion, Lease: lease, Code: code})
 }
 
 // NeedsSubtool pauses an item no rule covers.
-func (h *HTTP) NeedsSubtool(ctx context.Context, leaseID string, r Report) error {
-	return h.post(ctx, PathNeedsSubtool, reportRequest{LeaseID: leaseID, Report: r}, nil)
+func (h *HTTP) NeedsSubtool(ctx context.Context, lease string) error {
+	return h.result(ctx, PathNeedsSubtool, heartbeatRequest{Contract: catalog.ContractVersion, Lease: lease})
 }

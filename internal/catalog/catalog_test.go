@@ -111,7 +111,7 @@ func TestEncodeIsStableAndSorted(t *testing.T) {
 	if a, b, cc := strings.Index(string(first), "a-tool"), strings.Index(string(first), "b-tool"), strings.Index(string(first), "c-tool"); !(a < b && b < cc) {
 		t.Error("entries are not in slug order")
 	}
-	if got := string(Empty().Encode()); got != "{\n  \"contract_version\": \"v1\",\n  \"entries\": []\n}\n" {
+	if got := string(Empty().Encode()); got != "{\n  \"contract\": \"v1\",\n  \"entries\": []\n}\n" {
 		t.Errorf("empty catalog encodes as %q", got)
 	}
 }
@@ -158,5 +158,29 @@ func TestParseOversized(t *testing.T) {
 		t.Fatal("an oversized catalog was accepted")
 	} else if e, _ := cserr.From(err); e == nil || e.Reason != cserr.InvalidCatalog {
 		t.Errorf("got %v", err)
+	}
+}
+
+func TestParseEntry(t *testing.T) {
+	e := entry("a-tool")
+	good := Empty()
+	good.Upsert(&e)
+	raw := []byte(`{"slug":"a-tool","status":"live","title":"Sample","summary":"A made-up tool.","repository":"https://forge.example/tools/a-tool","provenance":{"note":"Made up.","links":["https://rules.example/a"]}}`)
+	got, err := ParseEntry(raw)
+	if err != nil || !Equal(got, &e) {
+		t.Fatalf("ParseEntry: %v, %+v", err, got)
+	}
+	cases := map[string]cserr.Reason{
+		`{"published":true}`: cserr.InvalidCatalog,
+		`[]`:                 cserr.InvalidCatalog,
+		`{"slug":"a-tool","status":"featured","title":"Sample","summary":"A made-up tool."}`: cserr.UnsupportedEntryType,
+		`{"slug":"a-tool","status":"live","title":"Sample","summary":"A made-up tool."}`:     cserr.InvalidCatalog,
+		`{"slug":"a-tool","title":"Sample","summary":"A made-up tool."}`:                     cserr.InvalidCatalog,
+	}
+	for in, want := range cases {
+		_, err := ParseEntry([]byte(in))
+		if e, _ := cserr.From(err); e == nil || e.Reason != want {
+			t.Errorf("ParseEntry(%s) = %v, want %s", in, err, want.Name)
+		}
 	}
 }

@@ -1,6 +1,10 @@
 // Package muster is the small interface to Muster, the only service
 // Chartroom talks to. It holds the interface, an HTTP client for it and an
-// in-memory stand-in that follows SPEC.md.
+// in-memory stand-in.
+//
+// All three follow Muster's contract v1 (contract/v1/CONTRACT.md in the
+// Muster repository). The saved examples from that contract are replayed
+// by this package's tests.
 package muster
 
 import (
@@ -9,71 +13,84 @@ import (
 	"errors"
 )
 
-// Worker is the name Chartroom gives when it asks for work.
+// Worker is Chartroom's name in the naming registry. Muster learns it from
+// the ServiceAccount token, so it is never sent in a request.
 const Worker = "chartroom"
 
-// The three priorities, in the order they are processed.
+// KindItem is the kind of step Chartroom works on.
+const KindItem = "item"
+
+// The three lanes, in the order Muster empties them.
 const (
-	PriorityUrgent   = "urgent"
-	PriorityNormal   = "normal"
-	PriorityBackfill = "backfill"
+	LaneUrgent   = "urgent"
+	LaneNormal   = "normal"
+	LaneBackfill = "backfill"
 )
 
-// PriorityRank orders priorities: urgent, then normal, then backfill. An
-// unknown priority sorts last.
-func PriorityRank(p string) int {
-	switch p {
-	case PriorityUrgent:
+// LaneRank orders lanes: urgent, then normal, then backfill. An unknown
+// lane sorts last.
+func LaneRank(lane string) int {
+	switch lane {
+	case LaneUrgent:
 		return 0
-	case PriorityNormal:
+	case LaneNormal:
 		return 1
-	case PriorityBackfill:
+	case LaneBackfill:
 		return 2
 	}
 	return 3
 }
 
+// The errors a call can end in. They are fixed: none carries an address, a
+// token or any text that came over the network.
 var (
 	// ErrUnavailable means Muster did not acknowledge the call: it timed
-	// out, could not be reached or answered with an error. The call can be
-	// tried again.
+	// out, could not be reached, was busy or failed. Try again later.
 	ErrUnavailable = errors.New("muster did not acknowledge the call")
-	// ErrLeaseGone means Muster no longer holds this lease. The result for
-	// it can be dropped; Muster will lease the item again if it needs to.
-	ErrLeaseGone = errors.New("muster no longer holds this lease")
+	// ErrLeaseNotHeld means Muster refused the call because the lease is
+	// unknown, has ended or was taken over. The result can be dropped;
+	// Muster offers the step again if it still needs doing.
+	ErrLeaseNotHeld = errors.New("muster does not hold this lease")
+	// ErrMoveNotAllowed means Muster's tables do not allow what the call
+	// asked for. Sending it again cannot help.
+	ErrMoveNotAllowed = errors.New("muster does not allow this move")
+	// ErrUnknownContract means Muster does not speak this contract version.
+	ErrUnknownContract = errors.New("muster does not know this contract version")
+	// ErrRefused means Muster refused the call for any other reason that
+	// sending the same call again cannot cure.
+	ErrRefused = errors.New("muster refused the call")
 	// ErrBadResponse means Muster answered with data that could not be read.
 	ErrBadResponse = errors.New("muster answered with unreadable data")
 )
 
-// Lease is one leased item. Item is the decision to publish. Catalog is
-// the part of the catalog the decision can touch: at least the entry with
-// the same slug and, for a merge, the parent entry.
-type Lease struct {
-	LeaseID  string          `json:"lease_id"`
-	Priority string          `json:"priority"`
-	Item     json.RawMessage `json:"item"`
-	Catalog  json.RawMessage `json:"catalog"`
+// Grant is the answer to a lease call that found a step: what the step is
+// about, the state it is in and what earlier workers recorded. Results
+// holds the latest result of each earlier worker, by worker name.
+type Grant struct {
+	Lease    string                     `json:"lease"`
+	Kind     string                     `json:"kind"`
+	ID       string                     `json:"id"`
+	State    string                     `json:"state"`
+	Lane     string                     `json:"lane"`
+	Attempt  int                        `json:"attempt"`
+	Expires  string                     `json:"expires"`
+	Found    json.RawMessage            `json:"found,omitempty"`
+	Results  map[string]json.RawMessage `json:"results,omitempty"`
+	Proposal json.RawMessage            `json:"proposal,omitempty"`
+	Incident json.RawMessage            `json:"incident,omitempty"`
 }
 
-// Report is what Chartroom tells Muster when an item fails or is paused.
-// Every field is a constant from package cserr.
-type Report struct {
-	Code    string `json:"code"`
-	Reason  string `json:"reason"`
-	Field   string `json:"field,omitempty"`
-	Message string `json:"message"`
-}
-
-// Client is the five calls the specification lists.
+// Client is the five worker calls of Muster's contract.
 type Client interface {
-	// Lease asks for up to max items, highest priority first.
-	Lease(ctx context.Context, max int) ([]Lease, error)
-	// Heartbeat keeps a lease alive.
-	Heartbeat(ctx context.Context, leaseID string) error
-	// Complete hands over the catalog change for a lease.
-	Complete(ctx context.Context, leaseID string, change json.RawMessage) error
-	// Fail reports that the item's data was broken.
-	Fail(ctx context.Context, leaseID string, r Report) error
+	// Lease asks for the next step. It returns nil when there is none.
+	Lease(ctx context.Context) (*Grant, error)
+	// Heartbeat keeps a lease.
+	Heartbeat(ctx context.Context, lease string) error
+	// Complete reports a finished step: the state the item is now in and,
+	// optionally, a result, which must be a JSON object.
+	Complete(ctx context.Context, lease, state string, result json.RawMessage) error
+	// Fail reports E_TIMEOUT or E_PARSE for a step.
+	Fail(ctx context.Context, lease, code string) error
 	// NeedsSubtool pauses an item no rule covers.
-	NeedsSubtool(ctx context.Context, leaseID string, r Report) error
+	NeedsSubtool(ctx context.Context, lease string) error
 }

@@ -1,1 +1,0 @@
-E_PARSE invalid_metadata item_id: the catalog metadata is not valid

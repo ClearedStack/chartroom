@@ -1,8 +1,8 @@
 {
-  "contract_version": "v1",
-  "item_id": "itm-0103",
+  "contract": "v1",
+  "id": "PA-0103",
   "action": "merge",
-  "from": "scored",
+  "from": "merged",
   "to": "merged",
   "slug": "sample-clause-index",
   "changed": false,

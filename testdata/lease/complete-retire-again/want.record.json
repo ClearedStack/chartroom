@@ -1,0 +1,26 @@
+{
+  "contract": "v1",
+  "lease": "PA-0101.13.1",
+  "id": "PA-0101",
+  "lane": "urgent",
+  "outcome": "complete",
+  "state": "retired",
+  "result": {
+    "slug": "sample-clause-finder",
+    "status": "retired",
+    "title": "Sample Clause Finder",
+    "summary": "Finds the clauses that Example Rule 900.12 says a made-up contract must carry.",
+    "repository": "https://forge.example/tools/sample-clause-finder",
+    "provenance": {
+      "note": "Built from the public text of Example Rule 900.12 as published at rules.example. Written from scratch: no code, text or design was copied from another project.",
+      "links": [
+        "https://rules.example/part-900/section-12",
+        "https://forge.example/tools/sample-clause-finder/src/NOTICE"
+      ]
+    },
+    "retirement": {
+      "reason": "repealed",
+      "note": "Example Rule 900.44 was repealed, and Example Form 12 with it. The entry is kept for the record."
+    }
+  }
+}

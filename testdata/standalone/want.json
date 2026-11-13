@@ -1,49 +1,51 @@
 {
   "items": [
     {
-      "item_id": "itm-0101",
-      "priority": "urgent",
+      "id": "PA-0101",
+      "lane": "urgent",
+      "state": "live",
       "status": "completed",
-      "state": "live"
+      "attempt": 1
     },
     {
-      "item_id": "itm-0106",
-      "priority": "urgent",
-      "status": "failed",
-      "code": "E_PARSE",
-      "reason": "missing_provenance",
-      "field": "provenance"
+      "id": "PA-0106",
+      "lane": "urgent",
+      "state": "building",
+      "status": "stopped",
+      "attempt": 1,
+      "code": "E_PARSE"
     },
     {
-      "item_id": "itm-0102",
-      "priority": "normal",
+      "id": "PA-0102",
+      "lane": "normal",
+      "state": "linked",
       "status": "completed",
-      "state": "linked"
+      "attempt": 1
     },
     {
-      "item_id": "itm-0103",
-      "priority": "normal",
+      "id": "PA-0103",
+      "lane": "normal",
+      "state": "merged",
       "status": "completed",
-      "state": "merged"
+      "attempt": 1
     },
     {
-      "item_id": "itm-0105",
-      "priority": "normal",
-      "status": "needs_subtool",
-      "state": "needs_subtool",
-      "code": "E_NEEDS_SUBTOOL",
-      "reason": "unsupported_entry_type",
-      "field": "action"
-    },
-    {
-      "item_id": "itm-0104",
-      "priority": "backfill",
+      "id": "PA-0104",
+      "lane": "backfill",
+      "state": "retired",
       "status": "completed",
-      "state": "retired"
+      "attempt": 1
+    },
+    {
+      "id": "PA-0105",
+      "lane": "normal",
+      "state": "scored",
+      "status": "leased",
+      "attempt": 1
     }
   ],
   "catalog": {
-    "contract_version": "v1",
+    "contract": "v1",
     "entries": [
       {
         "slug": "sample-clause-finder",

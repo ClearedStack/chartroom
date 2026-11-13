@@ -41,28 +41,38 @@ const (
 var ErrUnusable = errors.New("the spool directory is not usable")
 
 // Record is one staged result, waiting for Muster's acknowledgement.
+//
+// A complete record holds what the complete call sends: the state the item
+// is now in and the result, which is the catalog entry. A fail or
+// needs_subtool record holds the public error code, and the reason and
+// field for Chartroom's own log; Muster is sent the code and no more.
 type Record struct {
-	ContractVersion string          `json:"contract_version"`
-	LeaseID         string          `json:"lease_id"`
-	ItemID          string          `json:"item_id,omitempty"`
-	Priority        string          `json:"priority"`
-	Outcome         string          `json:"outcome"`
-	Change          json.RawMessage `json:"change,omitempty"`
-	Report          *muster.Report  `json:"report,omitempty"`
+	Contract string          `json:"contract"`
+	Lease    string          `json:"lease"`
+	ID       string          `json:"id,omitempty"`
+	Lane     string          `json:"lane"`
+	Outcome  string          `json:"outcome"`
+	State    string          `json:"state,omitempty"`
+	Result   json.RawMessage `json:"result,omitempty"`
+	Code     string          `json:"code,omitempty"`
+	Reason   string          `json:"reason,omitempty"`
+	Field    string          `json:"field,omitempty"`
 }
 
 // Encode writes the record in canonical form.
 func (r *Record) Encode() []byte { return strictjson.Marshal(r) }
 
 func (r *Record) valid() bool {
-	if r.ContractVersion != catalog.ContractVersion || r.LeaseID == "" {
+	if r.Contract != catalog.ContractVersion || r.Lease == "" {
 		return false
 	}
 	switch r.Outcome {
 	case OutcomeComplete:
-		return len(r.Change) > 0 && r.Report == nil
-	case OutcomeFail, OutcomeNeedsSubtool:
-		return len(r.Change) == 0 && r.Report != nil
+		return r.State != "" && len(r.Result) > 0 && r.Code == ""
+	case OutcomeFail:
+		return len(r.Result) == 0 && (r.Code == "E_PARSE" || r.Code == "E_TIMEOUT") && r.Reason != ""
+	case OutcomeNeedsSubtool:
+		return len(r.Result) == 0 && r.Code == "E_NEEDS_SUBTOOL" && r.Reason != ""
 	}
 	return false
 }
@@ -98,13 +108,13 @@ func Open(dir string) (s *Spool, discarded int, err error) {
 			continue
 		}
 		rec, ok := readRecord(path)
-		if !ok || fileName(rec.LeaseID) != name {
+		if !ok || fileName(rec.Lease) != name {
 			_ = os.Remove(path)
 			discarded++
 			continue
 		}
 		s.seq++
-		s.records[rec.LeaseID] = &staged{rec: rec, seq: s.seq}
+		s.records[rec.Lease] = &staged{rec: rec, seq: s.seq}
 	}
 	return s, discarded, nil
 }
@@ -142,11 +152,11 @@ func readRecord(path string) (Record, bool) {
 	if strictjson.Decode(data, MaxRecordBytes, &rec) != nil || !rec.valid() {
 		return rec, false
 	}
-	rec.Change = Compact(rec.Change)
+	rec.Result = Compact(rec.Result)
 	return rec, true
 }
 
-// Compact strips insignificant white space from raw JSON, so a change is
+// Compact strips insignificant white space from raw JSON, so a result is
 // the same bytes whether it was just worked out or read back from disk.
 func Compact(raw json.RawMessage) json.RawMessage {
 	if len(raw) == 0 {
@@ -161,8 +171,8 @@ func Compact(raw json.RawMessage) json.RawMessage {
 
 // fileName gives the file a lease's record lives in. The lease identifier
 // comes from outside, so it is hashed and never used as a path itself.
-func fileName(leaseID string) string {
-	sum := sha256.Sum256([]byte(leaseID))
+func fileName(lease string) string {
+	sum := sha256.Sum256([]byte(lease))
 	return hex.EncodeToString(sum[:16]) + recSuffix
 }
 
@@ -172,8 +182,8 @@ func (s *Spool) Put(rec Record) error {
 	if !rec.valid() {
 		return ErrUnusable
 	}
-	rec.Change = Compact(rec.Change)
-	final := filepath.Join(s.dir, fileName(rec.LeaseID))
+	rec.Result = Compact(rec.Result)
+	final := filepath.Join(s.dir, fileName(rec.Lease))
 	tmp := final + tmpSuffix
 	if err := writeSynced(tmp, rec.Encode()); err != nil {
 		_ = os.Remove(tmp)
@@ -184,12 +194,12 @@ func (s *Spool) Put(rec Record) error {
 		return ErrUnusable
 	}
 	syncDir(s.dir)
-	if old, ok := s.records[rec.LeaseID]; ok {
+	if old, ok := s.records[rec.Lease]; ok {
 		old.rec = rec
 		return nil
 	}
 	s.seq++
-	s.records[rec.LeaseID] = &staged{rec: rec, seq: s.seq}
+	s.records[rec.Lease] = &staged{rec: rec, seq: s.seq}
 	return nil
 }
 
@@ -218,15 +228,15 @@ func syncDir(dir string) {
 
 // Remove drops the record for a lease, once Muster has acknowledged it or
 // no longer wants it.
-func (s *Spool) Remove(leaseID string) error {
-	if _, ok := s.records[leaseID]; !ok {
+func (s *Spool) Remove(lease string) error {
+	if _, ok := s.records[lease]; !ok {
 		return nil
 	}
-	if err := os.Remove(filepath.Join(s.dir, fileName(leaseID))); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(filepath.Join(s.dir, fileName(lease))); err != nil && !os.IsNotExist(err) {
 		return ErrUnusable
 	}
 	syncDir(s.dir)
-	delete(s.records, leaseID)
+	delete(s.records, lease)
 	return nil
 }
 
@@ -241,7 +251,7 @@ func (s *Spool) Pending() []Record {
 		list = append(list, st)
 	}
 	sort.Slice(list, func(i, j int) bool {
-		ri, rj := muster.PriorityRank(list[i].rec.Priority), muster.PriorityRank(list[j].rec.Priority)
+		ri, rj := muster.LaneRank(list[i].rec.Lane), muster.LaneRank(list[j].rec.Lane)
 		if ri != rj {
 			return ri < rj
 		}
