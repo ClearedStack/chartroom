@@ -1,0 +1,106 @@
+# Chartroom in the cs-workers namespace.
+#
+# Apply with ko, which builds the image from source and fills in the
+# reference:  ko apply --base-import-paths -f deploy/
+#
+# Two things here are provisional until Muster exists (see the README):
+# the ConfigMap key that gives Muster's address, and the label the
+# NetworkPolicy uses to find Muster's pods.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: chartroom
+  namespace: cs-workers
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chartroom
+  namespace: cs-workers
+  labels:
+    app.kubernetes.io/name: chartroom
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: chartroom
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: chartroom
+    spec:
+      serviceAccountName: chartroom
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: chartroom
+          image: ko://github.com/ClearedStack/chartroom/cmd/chartroom
+          args: ["run"]
+          env:
+            - name: CONTRACT_VERSION
+              value: v1
+            - name: GOMEMLIMIT
+              value: 24MiB
+            - name: MUSTER_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: chartroom
+                  key: muster-url
+          resources:
+            requests:
+              cpu: 10m
+              memory: 30Mi
+            limits:
+              memory: 30Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            privileged: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: spool
+              mountPath: /var/spool/cs
+      volumes:
+        - name: spool
+          emptyDir:
+            sizeLimit: 16Mi
+---
+# Chartroom accepts no connections and may open them only to Muster and to
+# cluster DNS. Every other destination in the cluster is closed to it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: chartroom
+  namespace: cs-workers
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: chartroom
+  policyTypes: ["Ingress", "Egress"]
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: muster
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

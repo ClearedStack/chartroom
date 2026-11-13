@@ -1,0 +1,24 @@
+{
+  "priority": "normal",
+  "item": {
+    "contract_version": "v1",
+    "item_id": "itm-0102",
+    "state": "scored",
+    "action": "link",
+    "slug": "sample-rate-lookup",
+    "entry": {
+      "title": "Sample Rate Lookup",
+      "summary": "Looks up a made-up rate in the table that Example Rule 900.18 points to."
+    },
+    "link": {
+      "name": "Example Rate Table",
+      "url": "https://tools.example/rate-table"
+    },
+    "provenance": {
+      "note": "Linked, not rebuilt: an existing free tool already covers Example Rule 900.18.",
+      "links": [
+        "https://rules.example/part-900/section-18"
+      ]
+    }
+  }
+}

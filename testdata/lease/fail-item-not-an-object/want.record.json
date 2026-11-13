@@ -1,0 +1,11 @@
+{
+  "contract_version": "v1",
+  "lease_id": "lease-0006",
+  "priority": "normal",
+  "outcome": "fail",
+  "report": {
+    "code": "E_PARSE",
+    "reason": "malformed_json",
+    "message": "the data is not well-formed JSON"
+  }
+}

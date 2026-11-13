@@ -1,0 +1,12 @@
+# The image is built straight from source with ko. There is no Dockerfile.
+# ko's default base image is a static, shell-less image that runs as a
+# non-root user.
+builds:
+  - id: chartroom
+    main: ./cmd/chartroom
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w

@@ -1,0 +1,15 @@
+{
+  "contract_version": "v1",
+  "item_id": "itm-0103",
+  "state": "scored",
+  "action": "merge",
+  "slug": "sample-clause-index",
+  "entry": {
+    "title": "Sample Clause Index",
+    "summary": "Lists the clauses named in Example Rule 900.31."
+  },
+  "merge": {
+    "parent": "sample-ledger-check",
+    "note": ""
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "contract_version": "v1",
+  "item_id": "itm-0104",
+  "state": "live",
+  "action": "retire",
+  "slug": "sample-form-filler",
+  "retire": {
+    "reason": "superseded",
+    "note": "Example Rule 900.44 was superseded by Example Rule 901.2.\nThe entry is kept for the record."
+  }
+}

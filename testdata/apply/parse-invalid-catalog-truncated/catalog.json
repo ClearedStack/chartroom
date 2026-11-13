@@ -1,0 +1,27 @@
+{
+  "contract_version": "v1",
+  "entries": [
+    {
+      "slug": "sample-date-counter",
+      "status": "linked",
+      "title": "Sample Date Counter",
+      "summary": "Counts the working days between two dates under Example Rule 900.7.",
+      "link": {
+        "name": "Example Date Tool",
+        "url": "https://tools.example/date-counter"
+      },
+      "provenance": {
+        "note": "Linked, not rebuilt: an existing free tool already covers Example Rule 900.7.",
+        "links": [
+          "https://rules.example/part-900/section-7"
+        ]
+      }
+    },
+    {
+      "slug": "sample-form-filler",
+      "status": "live",
+      "title": "Sample Form Filler",
+      "summary": "Fills in the made-up Example Form 12 from a spreadsheet.",
+      "repository": "https://forge.example/tools/sample-form-filler",
+      "provenance": {
+        "note": "Built from the public text of Example Rule 900.44 as published at rules.example. Written from scratch: no code, text or des

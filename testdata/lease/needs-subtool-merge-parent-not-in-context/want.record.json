@@ -1,0 +1,13 @@
+{
+  "contract_version": "v1",
+  "lease_id": "lease-0011",
+  "item_id": "itm-0103",
+  "priority": "normal",
+  "outcome": "needs_subtool",
+  "report": {
+    "code": "E_NEEDS_SUBTOOL",
+    "reason": "unsupported_catalog_state",
+    "field": "merge.parent",
+    "message": "no rule covers the current catalog state of this entry"
+  }
+}
