@@ -368,7 +368,7 @@ func (m *Memory) publish(ctx context.Context, result json.RawMessage) {
 		}
 	}
 	cat.Upsert(entry)
-	_ = m.hub.WriteFile(ctx, CatalogPath, cat.Encode(), "catalog: "+entry.Status+" "+entry.Slug)
+	_ = m.hub.WriteFile(ctx, entry.Slug, CatalogPath, cat.Encode(), "catalog: "+entry.Status+" "+entry.Slug)
 }
 
 func (m *Memory) note(call string) {

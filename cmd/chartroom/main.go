@@ -42,6 +42,10 @@ const memoryLimit = 24 << 20
 // defaultTokenFile is where Kubernetes mounts the ServiceAccount token.
 const defaultTokenFile = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 
+// credentialsDirEnv names the directory that holds the files "user" and
+// "token" for Plainforge, where a mounted Secret puts them.
+const credentialsDirEnv = "CHARTROOM_PLAINFORGE_CREDENTIALS_DIR"
+
 // Exit statuses.
 const (
 	exitOK           = 0
@@ -201,6 +205,13 @@ func cmdRun(args []string, getenv func(string) string, stdout, stderr io.Writer)
 		return usageError(stderr, "run was given arguments it does not know")
 	}
 
+	// Optional credentials for Plainforge, from a mounted Secret. A half
+	// Secret stops the worker here, before it touches anything.
+	pfUser, pfToken, pfAuth, err := plainforge.LoadCredentials(getenv(credentialsDirEnv))
+	if err != nil {
+		return usageError(stderr, err.Error())
+	}
+
 	cfg := worker.DefaultConfig()
 	log := slog.New(slog.NewJSONHandler(stderr, nil))
 	sp, discarded, err := spool.Open(*spoolDir)
@@ -236,6 +247,9 @@ func cmdRun(args []string, getenv func(string) string, stdout, stderr io.Writer)
 		if err != nil {
 			return usageError(stderr, plainforge.ErrBadAddress.Error())
 		}
+		if pfAuth {
+			hub.SetBasicAuth(pfUser, pfToken)
+		}
 		cfg.Hub = hub
 	}
 	cfg.Once = *once
@@ -270,7 +284,7 @@ func runStandalone(ctx context.Context, cfg worker.Config, sp *spool.Spool, log 
 	sort.Strings(names)
 
 	hub := plainforge.NewMemory()
-	_ = hub.WriteFile(ctx, muster.CatalogPath, catalogData, "seed")
+	_ = hub.WriteFile(ctx, "seed", muster.CatalogPath, catalogData, "seed")
 	m := muster.NewMemory(hub, time.Now, muster.LeaseLength)
 	for _, name := range names {
 		data, err := readInput(name, decision.MaxItemBytes)

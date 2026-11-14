@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -827,6 +828,11 @@ func TestWorkerWithPlainforgeHubEnforcesCatalogRulesAndRetriesCleanly(t *testing
 	commits := workerHub.Commits()
 	if len(commits) != 2 {
 		t.Fatalf("workerHub commits = %d, want 2 (publish + valid merge, zero duplicate on Muster retry)", len(commits))
+	}
+	gotSlugs := []string{commits[0].Slug, commits[1].Slug}
+	sort.Strings(gotSlugs)
+	if gotSlugs[0] != "folded-helper" || gotSlugs[1] != "sample-clause-finder" {
+		t.Fatalf("commit slugs = %v, want the slug of each entry written", gotSlugs)
 	}
 	rawCat, err := workerHub.ReadFile(context.Background(), muster.CatalogPath)
 	if err != nil {

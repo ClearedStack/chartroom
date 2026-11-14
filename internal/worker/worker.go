@@ -327,7 +327,7 @@ func (w *Worker) commitCatalog(ctx context.Context, rec spool.Record) error {
 	cat.Upsert(entry)
 	wctx, cancelWrite := w.call(ctx)
 	defer cancelWrite()
-	return w.cfg.Hub.WriteFile(wctx, path, cat.Encode(), "catalog: "+entry.Status+" "+entry.Slug)
+	return w.cfg.Hub.WriteFile(wctx, entry.Slug, path, cat.Encode(), "catalog: "+entry.Status+" "+entry.Slug)
 }
 
 // drop takes a result out of the spool and logs why. refusal is the error
