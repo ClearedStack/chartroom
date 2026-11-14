@@ -1,0 +1,15 @@
+{
+  "contract": "v1",
+  "id": "PA-0102",
+  "state": "linked",
+  "action": "link",
+  "slug": "sample-rate-lookup",
+  "entry": {
+    "title": "Sample Rate Lookup",
+    "summary": "Looks up a made-up rate in the table that Example Rule 900.18 points to."
+  },
+  "link": {
+    "name": "Example Rate Table",
+    "url": "https://tools.example/rate-table"
+  }
+}

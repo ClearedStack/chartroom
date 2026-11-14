@@ -1,0 +1,19 @@
+{
+  "contract": "v1",
+  "entries": [
+    {
+      "slug": "sample-clause-finder",
+      "status": "live",
+      "title": "Sample Clause Finder",
+      "summary": "Finds the clauses that Example Rule 900.12 says a made-up contract must carry.",
+      "repository": "https://forge.example/tools/sample-clause-finder",
+      "provenance": {
+        "note": "Built from the public text of Example Rule 900.12 as published at rules.example. Written from scratch: no code, text or design was copied from another project.",
+        "links": [
+          "https://rules.example/part-900/section-12",
+          "https://forge.example/tools/sample-clause-finder/src/NOTICE"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "contract": "v1",
+  "id": "PA-0103",
+  "action": "merge",
+  "from": "merged",
+  "to": "merged",
+  "slug": "sample-clause-index",
+  "changed": false,
+  "before": {
+    "slug": "sample-clause-index",
+    "status": "merged",
+    "title": "Sample Clause Index",
+    "summary": "Lists the clauses named in Example Rule 900.31.",
+    "merge": {
+      "parent": "sample-ledger-check",
+      "note": "Folded into Sample Ledger Check, which already reads Example Rule 900.31."
+    }
+  },
+  "after": {
+    "slug": "sample-clause-index",
+    "status": "merged",
+    "title": "Sample Clause Index",
+    "summary": "Lists the clauses named in Example Rule 900.31.",
+    "merge": {
+      "parent": "sample-ledger-check",
+      "note": "Folded into Sample Ledger Check, which already reads Example Rule 900.31."
+    }
+  }
+}

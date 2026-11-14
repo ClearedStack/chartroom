@@ -1,0 +1,10 @@
+{
+  "contract": "v1",
+  "lease": "PA-0102.3.1",
+  "id": "PA-0102",
+  "lane": "normal",
+  "outcome": "needs_subtool",
+  "code": "E_NEEDS_SUBTOOL",
+  "reason": "unsupported_transition",
+  "field": "state"
+}

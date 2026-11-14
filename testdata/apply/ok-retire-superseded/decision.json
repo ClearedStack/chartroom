@@ -1,0 +1,11 @@
+{
+  "contract": "v1",
+  "id": "PA-0104",
+  "state": "retired",
+  "action": "retire",
+  "slug": "sample-form-filler",
+  "retire": {
+    "reason": "superseded",
+    "note": "Example Rule 900.44 was superseded by Example Rule 901.2.\nThe entry is kept for the record."
+  }
+}

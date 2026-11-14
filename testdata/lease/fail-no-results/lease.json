@@ -1,0 +1,9 @@
+{
+  "lease": "PA-0101.8.1",
+  "kind": "item",
+  "id": "PA-0101",
+  "state": "building",
+  "lane": "normal",
+  "attempt": 1,
+  "expires": "2026-01-05T09:01:00Z"
+}

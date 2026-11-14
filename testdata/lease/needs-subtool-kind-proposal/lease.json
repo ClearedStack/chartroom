@@ -1,0 +1,17 @@
+{
+  "lease": "EP-0001.1.1",
+  "kind": "proposal",
+  "id": "EP-0001",
+  "state": "pending_approval",
+  "lane": "normal",
+  "attempt": 1,
+  "expires": "2026-01-05T09:01:00Z",
+  "proposal": {
+    "target": "catalog/sample-calculator/description",
+    "repository": "clearedstack.com",
+    "file": "src/data/sample-catalog.json",
+    "edit_kind": "DATA",
+    "change": "A made-up change.",
+    "reason": "A made-up reason."
+  }
+}

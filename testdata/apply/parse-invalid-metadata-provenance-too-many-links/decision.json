@@ -1,0 +1,60 @@
+{
+  "contract": "v1",
+  "id": "PA-0101",
+  "state": "building",
+  "action": "publish",
+  "slug": "sample-clause-finder",
+  "entry": {
+    "title": "Sample Clause Finder",
+    "summary": "Finds the clauses that Example Rule 900.12 says a made-up contract must carry."
+  },
+  "publish": {
+    "repository": "https://forge.example/tools/sample-clause-finder"
+  },
+  "provenance": {
+    "note": "Built from the public text of Example Rule 900.12 as published at rules.example. Written from scratch: no code, text or design was copied from another project.",
+    "links": [
+      "https://rules.example/part-900/section-1",
+      "https://rules.example/part-900/section-2",
+      "https://rules.example/part-900/section-3",
+      "https://rules.example/part-900/section-4",
+      "https://rules.example/part-900/section-5",
+      "https://rules.example/part-900/section-6",
+      "https://rules.example/part-900/section-7",
+      "https://rules.example/part-900/section-8",
+      "https://rules.example/part-900/section-9",
+      "https://rules.example/part-900/section-10",
+      "https://rules.example/part-900/section-11",
+      "https://rules.example/part-900/section-12",
+      "https://rules.example/part-900/section-13",
+      "https://rules.example/part-900/section-14",
+      "https://rules.example/part-900/section-15",
+      "https://rules.example/part-900/section-16",
+      "https://rules.example/part-900/section-17"
+    ]
+  },
+  "attestation": {
+    "conditions": [
+      {
+        "name": "builds-from-source",
+        "passed": true
+      },
+      {
+        "name": "tests-pass",
+        "passed": true
+      },
+      {
+        "name": "fixtures-match",
+        "passed": true
+      },
+      {
+        "name": "license-present",
+        "passed": true
+      },
+      {
+        "name": "notice-kept",
+        "passed": true
+      }
+    ]
+  }
+}

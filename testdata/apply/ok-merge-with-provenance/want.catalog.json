@@ -1,0 +1,93 @@
+{
+  "contract": "v1",
+  "entries": [
+    {
+      "slug": "sample-clause-index",
+      "status": "merged",
+      "title": "Sample Clause Index",
+      "summary": "Lists the clauses named in Example Rule 900.31.",
+      "merge": {
+        "parent": "sample-ledger-check",
+        "note": "Folded into Sample Ledger Check, which already reads Example Rule 900.31."
+      },
+      "provenance": {
+        "note": "Scope taken from the public text of Example Rule 900.31.",
+        "links": [
+          "https://rules.example/part-900/section-31"
+        ]
+      }
+    },
+    {
+      "slug": "sample-date-counter",
+      "status": "linked",
+      "title": "Sample Date Counter",
+      "summary": "Counts the working days between two dates under Example Rule 900.7.",
+      "link": {
+        "name": "Example Date Tool",
+        "url": "https://tools.example/date-counter"
+      },
+      "provenance": {
+        "note": "Linked, not rebuilt: an existing free tool already covers Example Rule 900.7.",
+        "links": [
+          "https://rules.example/part-900/section-7"
+        ]
+      }
+    },
+    {
+      "slug": "sample-form-filler",
+      "status": "live",
+      "title": "Sample Form Filler",
+      "summary": "Fills in the made-up Example Form 12 from a spreadsheet.",
+      "repository": "https://forge.example/tools/sample-form-filler",
+      "provenance": {
+        "note": "Built from the public text of Example Rule 900.44 as published at rules.example. Written from scratch: no code, text or design was copied from another project.",
+        "links": [
+          "https://rules.example/part-900/section-44",
+          "https://forge.example/tools/sample-form-filler/src/NOTICE"
+        ]
+      }
+    },
+    {
+      "slug": "sample-ledger-check",
+      "status": "live",
+      "title": "Sample Ledger Check",
+      "summary": "Checks a made-up ledger export against Example Rule 900.31.",
+      "repository": "https://forge.example/tools/sample-ledger-check",
+      "provenance": {
+        "note": "Built from the public text of Example Rule 900.31 as published at rules.example. Written from scratch: no code, text or design was copied from another project.",
+        "links": [
+          "https://rules.example/part-900/section-31",
+          "https://forge.example/tools/sample-ledger-check/src/NOTICE"
+        ]
+      }
+    },
+    {
+      "slug": "sample-notice-reader",
+      "status": "merged",
+      "title": "Sample Notice Reader",
+      "summary": "Reads made-up notices issued under Example Rule 900.31.",
+      "merge": {
+        "parent": "sample-ledger-check",
+        "note": "Folded into Sample Ledger Check, which reads the same notices."
+      }
+    },
+    {
+      "slug": "sample-old-report",
+      "status": "retired",
+      "title": "Sample Old Report",
+      "summary": "Produced the made-up quarterly report that Example Rule 900.3 used to ask for.",
+      "repository": "https://forge.example/tools/sample-old-report",
+      "provenance": {
+        "note": "Built from the public text of Example Rule 900.3 as published at rules.example. Written from scratch: no code, text or design was copied from another project.",
+        "links": [
+          "https://rules.example/part-900/section-3",
+          "https://forge.example/tools/sample-old-report/src/NOTICE"
+        ]
+      },
+      "retirement": {
+        "reason": "repealed",
+        "note": "Example Rule 900.3 was repealed. The entry is kept for the record."
+      }
+    }
+  ]
+}

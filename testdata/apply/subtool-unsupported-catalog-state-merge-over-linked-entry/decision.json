@@ -1,0 +1,15 @@
+{
+  "contract": "v1",
+  "id": "PA-0103",
+  "state": "merged",
+  "action": "merge",
+  "slug": "sample-date-counter",
+  "entry": {
+    "title": "Sample Clause Index",
+    "summary": "Lists the clauses named in Example Rule 900.31."
+  },
+  "merge": {
+    "parent": "sample-ledger-check",
+    "note": "Folded into Sample Ledger Check, which already reads Example Rule 900.31."
+  }
+}

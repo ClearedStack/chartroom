@@ -1,0 +1,11 @@
+{
+  "contract": "v1",
+  "id": "PA-0104",
+  "state": "retired",
+  "action": "retire",
+  "slug": "sample-missing-tool",
+  "retire": {
+    "reason": "repealed",
+    "note": "Example Rule 900.44 was repealed, and Example Form 12 with it. The entry is kept for the record."
+  }
+}

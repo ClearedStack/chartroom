@@ -1,0 +1,41 @@
+{
+  "contract": "v1",
+  "id": "PA-0104",
+  "action": "retire",
+  "from": "retired",
+  "to": "retired",
+  "slug": "sample-form-filler",
+  "changed": true,
+  "before": {
+    "slug": "sample-form-filler",
+    "status": "live",
+    "title": "Sample Form Filler",
+    "summary": "Fills in the made-up Example Form 12 from a spreadsheet.",
+    "repository": "https://forge.example/tools/sample-form-filler",
+    "provenance": {
+      "note": "Built from the public text of Example Rule 900.44 as published at rules.example. Written from scratch: no code, text or design was copied from another project.",
+      "links": [
+        "https://rules.example/part-900/section-44",
+        "https://forge.example/tools/sample-form-filler/src/NOTICE"
+      ]
+    }
+  },
+  "after": {
+    "slug": "sample-form-filler",
+    "status": "retired",
+    "title": "Sample Form Filler",
+    "summary": "Fills in the made-up Example Form 12 from a spreadsheet.",
+    "repository": "https://forge.example/tools/sample-form-filler",
+    "provenance": {
+      "note": "Built from the public text of Example Rule 900.44 as published at rules.example. Written from scratch: no code, text or design was copied from another project.",
+      "links": [
+        "https://rules.example/part-900/section-44",
+        "https://forge.example/tools/sample-form-filler/src/NOTICE"
+      ]
+    },
+    "retirement": {
+      "reason": "superseded",
+      "note": "Example Rule 900.44 was superseded by Example Rule 901.2.\nThe entry is kept for the record."
+    }
+  }
+}

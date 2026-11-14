@@ -1,0 +1,9 @@
+{
+  "contract": "v1",
+  "lease": "EP-0001.1.1",
+  "lane": "normal",
+  "outcome": "needs_subtool",
+  "code": "E_NEEDS_SUBTOOL",
+  "reason": "unsupported_entry_type",
+  "field": "kind"
+}

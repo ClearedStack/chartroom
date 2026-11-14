@@ -1,0 +1,36 @@
+{
+  "id": "PA-0104",
+  "state": "retired",
+  "lane": "backfill",
+  "results": {
+    "trawl": {
+      "source": "made-up source"
+    },
+    "sextant": {
+      "job": "made-up job"
+    },
+    "assay": {
+      "score": 71
+    },
+    "chartroom": {
+      "slug": "sample-form-filler",
+      "status": "live",
+      "title": "Sample Form Filler",
+      "summary": "Fills in the made-up Example Form 12 from a spreadsheet.",
+      "repository": "https://forge.example/tools/sample-form-filler",
+      "provenance": {
+        "note": "Built from the public text of Example Rule 900.44 as published at rules.example. Written from scratch: no code, text or design was copied from another project.",
+        "links": [
+          "https://rules.example/part-900/section-44",
+          "https://forge.example/tools/sample-form-filler/src/NOTICE"
+        ]
+      }
+    },
+    "tidegauge": {
+      "retire": {
+        "reason": "repealed",
+        "note": "Example Rule 900.44 was repealed, and Example Form 12 with it. The entry is kept for the record."
+      }
+    }
+  }
+}

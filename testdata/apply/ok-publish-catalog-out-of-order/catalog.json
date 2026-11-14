@@ -1,0 +1,51 @@
+{
+  "contract": "v1",
+  "entries": [
+    {
+      "slug": "sample-old-report",
+      "status": "retired",
+      "title": "Sample Old Report",
+      "summary": "Produced the made-up quarterly report that Example Rule 900.3 used to ask for.",
+      "repository": "https://forge.example/tools/sample-old-report",
+      "provenance": {
+        "note": "Built from the public text of Example Rule 900.3 as published at rules.example. Written from scratch: no code, text or design was copied from another project.",
+        "links": [
+          "https://rules.example/part-900/section-3",
+          "https://forge.example/tools/sample-old-report/src/NOTICE"
+        ]
+      },
+      "retirement": {
+        "reason": "repealed",
+        "note": "Example Rule 900.3 was repealed. The entry is kept for the record."
+      }
+    },
+    {
+      "slug": "sample-ledger-check",
+      "status": "live",
+      "title": "Sample Ledger Check",
+      "summary": "Checks a made-up ledger export against Example Rule 900.31.",
+      "repository": "https://forge.example/tools/sample-ledger-check",
+      "provenance": {
+        "note": "Built from the public text of Example Rule 900.31 as published at rules.example. Written from scratch: no code, text or design was copied from another project.",
+        "links": [
+          "https://rules.example/part-900/section-31",
+          "https://forge.example/tools/sample-ledger-check/src/NOTICE"
+        ]
+      }
+    },
+    {
+      "slug": "sample-form-filler",
+      "status": "live",
+      "title": "Sample Form Filler",
+      "summary": "Fills in the made-up Example Form 12 from a spreadsheet.",
+      "repository": "https://forge.example/tools/sample-form-filler",
+      "provenance": {
+        "note": "Built from the public text of Example Rule 900.44 as published at rules.example. Written from scratch: no code, text or design was copied from another project.",
+        "links": [
+          "https://rules.example/part-900/section-44",
+          "https://forge.example/tools/sample-form-filler/src/NOTICE"
+        ]
+      }
+    }
+  ]
+}

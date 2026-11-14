@@ -1,0 +1,10 @@
+{
+  "contract": "v1",
+  "lease": "PA-0101.8.1",
+  "id": "PA-0101",
+  "lane": "normal",
+  "outcome": "fail",
+  "code": "E_PARSE",
+  "reason": "missing_attestation",
+  "field": "attestation.conditions.passed"
+}
