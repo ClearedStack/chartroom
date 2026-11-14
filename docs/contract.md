@@ -2,7 +2,7 @@
 
 Two contracts meet in Chartroom.
 
-1. **Muster's contract v1** says how a worker leases a step and reports on it. Muster owns it: `contract/v1/CONTRACT.md` in the [Muster repository](https://github.com/ClearedStack/muster). Chartroom follows it exactly and replays its saved examples in its own tests ([`testdata/muster-contract/`](../testdata/muster-contract)).
+1. **Muster's contract v1** says how a worker leases a step and reports on it. Muster owns it: `contract/v1/CONTRACT.md` in the [Muster repository](https://github.com/ClearedStack/muster). Chartroom follows it exactly and replays its saved examples in its own tests ([`testdata/contract/`](../testdata/contract)).
 2. **What Chartroom needs to publish an entry** is not in any specification yet. Muster's contract says each worker's result is a JSON object and no more. This page is what Chartroom was built against, written down so it can be reviewed, corrected and moved into the specifications.
 
 All data in the examples is made up.

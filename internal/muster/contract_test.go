@@ -17,7 +17,7 @@ import (
 )
 
 // example is one of Muster's saved contract examples. Its format is
-// described beside the originals; see testdata/muster-contract/README.md.
+// described beside the originals; see testdata/contract/SOURCE.md.
 type example struct {
 	About string `json:"about"`
 	Given *struct {
@@ -55,7 +55,7 @@ func compact(t *testing.T, raw []byte) string {
 
 func loadExamples(t *testing.T) map[string]example {
 	t.Helper()
-	dir := filepath.Join(fixture.Root, "muster-contract", "v1", "examples")
+	dir := filepath.Join(fixture.Root, "contract")
 	names, err := filepath.Glob(filepath.Join(dir, "*.json"))
 	if err != nil || len(names) == 0 {
 		t.Fatalf("no contract examples under %s", dir)

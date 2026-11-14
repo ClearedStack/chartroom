@@ -82,7 +82,7 @@ Every rule has a saved input and the exact output expected. A change in behaviou
 | [`testdata/lease/`](testdata/lease) | 32 lease answers in the shape of Muster's contract, and the exact record the worker stages for each. Every one that is an item is also run through the whole worker, in memory and over HTTP. |
 | [`testdata/worker/`](testdata/worker) | Two logs: a result retried after 1 s, 2 s and 4 s (`E_TIMEOUT`), with the staged file; and a pause that Muster refuses. |
 | [`testdata/standalone/`](testdata/standalone) | Six items in three lanes run through the whole loop, and the exact report. |
-| [`testdata/muster-contract/`](testdata/muster-contract) | Muster's own 50 saved examples of its contract, copied unchanged. Every worker call and every refusal among them is replayed against Chartroom's client, and those that need no setup against its stand-in. |
+| [`testdata/contract/`](testdata/contract) | Muster's own 50 saved examples of its contract, copied unchanged. Every worker call and every refusal among them is replayed against Chartroom's client, and those that need no setup against its stand-in. |
 
 A test checks that every error reason Chartroom can give appears in at least one saved output. `make golden` rewrites the expected outputs from the code; read the diff before committing it.
 
@@ -106,7 +106,7 @@ Both contracts Chartroom works to are in [`docs/contract.md`](docs/contract.md).
 
 ## Not yet done
 
-- **Never run against a real Muster.** The client follows Muster's contract v1 and its saved examples as of the commit named in [`testdata/muster-contract/README.md`](testdata/muster-contract/README.md). It has only ever talked to Chartroom's own stand-in.
+- **Never run against a real Muster.** The client follows Muster's contract v1 and its saved examples as of the commit named in [`testdata/contract/SOURCE.md`](testdata/contract/SOURCE.md). It has only ever talked to Chartroom's own stand-in.
 - **Never run in a cluster.** The manifest has not been applied anywhere. The image was built with `ko` to a local layout and not pushed.
 - **Where the entry's content comes from.** No specification says which earlier worker records the slug, the title, the repository, the provenance or the attestation, or in what shape. Chartroom reads named blocks from earlier results ([`docs/contract.md`](docs/contract.md)). Until the workers before it agree to write them, every real item will fail with `E_PARSE`.
 - **Priority class.** The specification says Chartroom runs under the Standard priority class and does not give the class's name. The manifest does not set one.

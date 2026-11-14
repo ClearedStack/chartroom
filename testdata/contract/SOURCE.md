@@ -1,6 +1,6 @@
 # Muster contract v1: saved examples
 
-The files under `v1/examples/` are Muster's own saved examples of its contract, one for each call and each refusal. They are copied here unchanged so Chartroom's tests can replay them without the Muster repository.
+The `.json` files in this directory are Muster's own saved examples of its contract, one for each call and each refusal. They are copied here unchanged so Chartroom's tests can replay them without the Muster repository.
 
 | | |
 | --- | --- |
@@ -23,4 +23,4 @@ Examples of calls that are not a worker's (`/v1/items`, `/v1/edits`, `/v1/feed`,
 
 ## Updating
 
-Copy the directory again, change the commit above, and run `go test ./internal/muster`. A failure is a change in the contract that Chartroom has to follow.
+Copy `contract/v1/examples/*.json` here again, change the commit above, and run `go test ./internal/muster`. A failure is a change in the contract that Chartroom has to follow.
