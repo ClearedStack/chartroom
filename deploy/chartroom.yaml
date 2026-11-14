@@ -65,6 +65,18 @@ spec:
               value: 24MiB
             - name: MUSTER_URL
               value: http://muster.clearedstack.svc.cluster.local:8080
+            # The hub repository in Plainforge. Chartroom reads catalog/tools.json
+            # from main and pushes only catalog/<slug> branches, which the owner
+            # merges.
+            - name: PLAINFORGE_URL
+              value: http://plainforge-http.clearedstack.svc.cluster.local:3000/ClearedStack/clearedstack.com.git
+            # Push credentials come from the Secret chartroom-plainforge (keys
+            # user and token), which the owner creates, mounted as files in
+            # this directory. The Secret is optional: with it absent the
+            # directory is missing and Chartroom pushes without credentials.
+            # A Secret with only one of the two keys stops the worker at start.
+            - name: CHARTROOM_PLAINFORGE_CREDENTIALS_DIR
+              value: /var/run/chartroom-plainforge
           resources:
             requests:
               cpu: 10m
@@ -80,7 +92,15 @@ spec:
           volumeMounts:
             - name: spool
               mountPath: /var/spool/cs
+            - name: plainforge-credentials
+              mountPath: /var/run/chartroom-plainforge
+              readOnly: true
       volumes:
         - name: spool
           emptyDir:
             sizeLimit: 16Mi
+        - name: plainforge-credentials
+          secret:
+            secretName: chartroom-plainforge
+            optional: true
+            defaultMode: 0440

@@ -496,13 +496,27 @@ func TestBinaryRunAgainstPlainforgeSmartHTTP(t *testing.T) {
 	if out, err := exec.Command("git", "-C", bareDir, "fsck", "--full", "--strict").CombinedOutput(); err != nil {
 		t.Fatalf("git fsck: %v\n%s", err, out)
 	}
-	committed, err := exec.Command("git", "-C", bareDir, "show", "refs/heads/main:"+muster.CatalogPath).Output()
+	// Chartroom never writes main: each item lands on its own catalog branch.
+	refsOut, err := exec.Command("git", "-C", bareDir, "for-each-ref", "--format=%(refname)").Output()
 	if err != nil {
-		t.Fatalf("git show catalog/tools.json: %v", err)
+		t.Fatal(err)
 	}
-	parsed, err := catalog.Parse(committed, catalog.MaxBytes)
-	if err != nil || len(parsed.Entries) != items {
-		t.Fatalf("committed catalog has %d entries, err=%v", len(parsed.Entries), err)
+	refs := strings.Fields(string(refsOut))
+	if len(refs) != items {
+		t.Fatalf("%d refs after the run, want %d catalog branches: %v", len(refs), items, refs)
+	}
+	for _, ref := range refs {
+		if !strings.HasPrefix(ref, "refs/heads/catalog/") {
+			t.Fatalf("the run wrote %s", ref)
+		}
+		committed, err := exec.Command("git", "-C", bareDir, "show", ref+":"+muster.CatalogPath).Output()
+		if err != nil {
+			t.Fatalf("git show %s: %v", ref, err)
+		}
+		parsed, err := catalog.Parse(committed, catalog.MaxBytes)
+		if err != nil || len(parsed.Entries) != 1 || "refs/heads/catalog/"+parsed.Entries[0].Slug != ref {
+			t.Fatalf("%s holds %d entries, err=%v", ref, len(parsed.Entries), err)
+		}
 	}
 
 	rssRaw, err := os.ReadFile(rssPath)

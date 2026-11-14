@@ -13,7 +13,8 @@ spec:
     - Egress
 ---
 # Chartroom accepts no connections and may open connections only to Muster in
-# clearedstack on TCP 8080 and to cluster DNS in kube-system on port 53.
+# clearedstack on TCP 8080, to Plainforge (its Forgejo pod) in clearedstack on
+# TCP 3000, and to cluster DNS in kube-system on port 53.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -40,6 +41,17 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: clearedstack
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: forgejo
+              app.kubernetes.io/instance: plainforge
+      ports:
+        - protocol: TCP
+          port: 3000
     - to:
         - namespaceSelector:
             matchLabels:

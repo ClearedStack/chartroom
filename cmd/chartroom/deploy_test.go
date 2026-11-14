@@ -84,6 +84,9 @@ func TestManifestKeepsThePodPosture(t *testing.T) {
 		"kubernetes.io/metadata.name: clearedstack",
 		"app.kubernetes.io/name: muster",
 		"port: 8080",
+		"app.kubernetes.io/name: forgejo",
+		"app.kubernetes.io/instance: plainforge",
+		"port: 3000",
 		"kubernetes.io/metadata.name: kube-system",
 		"port: 53",
 	} {
@@ -98,7 +101,7 @@ func TestManifestKeepsThePodPosture(t *testing.T) {
 	combined := strings.ToLower(workload + "\n" + netpol)
 	for _, banned := range []string{
 		"hostnetwork", "hostpath", "hostpid", "hostipc", "add:",
-		"plainforge", "logbook", "ghcr.io", "docker.io", "quay.io", "ko://", ":latest",
+		"logbook", "ghcr.io", "docker.io", "quay.io", "ko://", ":latest",
 		"secretkeyref", "kind: secret",
 	} {
 		if strings.Contains(combined, banned) {
