@@ -4,8 +4,9 @@
 //
 // By default Chartroom talks only to Muster and leaves catalog syncing to
 // Muster. Passing -plainforge-url (or PLAINFORGE_URL) gives the worker a
-// smart HTTP Hub so it can check whole-catalog invariants and commit
-// catalog/tools.json directly to refs/heads/main before completing a lease.
+// smart HTTP Hub so it can check whole-catalog invariants against main and
+// push catalog/tools.json to a catalog/<slug> branch before completing a
+// lease. The owner merges that branch; Chartroom never writes main.
 package plainforge
 
 import (
@@ -17,8 +18,11 @@ import (
 const (
 	// DefaultRepo is the bare hub repository name Plainforge serves.
 	DefaultRepo = "clearedstack.com.git"
-	// MainRef is the branch Chartroom reads from and commits to.
+	// MainRef is the branch Chartroom reads from. It never writes it.
 	MainRef = "refs/heads/main"
+	// BranchPrefix starts the name of every branch Chartroom pushes; the
+	// slug follows.
+	BranchPrefix = "refs/heads/catalog/"
 )
 
 // Fixed errors returned by a Hub. None carries an address, path, token or
@@ -36,14 +40,16 @@ var (
 	ErrCorrupt = errors.New("plainforge returned an unreadable git object")
 )
 
-// Hub is the hub repository: read a file, or commit a new version of it.
+// Hub is the hub repository: read a file from main, or commit a new version
+// of it on the branch catalog/<slug>.
 type Hub interface {
 	ReadFile(ctx context.Context, path string) ([]byte, error)
-	WriteFile(ctx context.Context, path string, data []byte, message string) error
+	WriteFile(ctx context.Context, slug, path string, data []byte, message string) error
 }
 
 // Commit is one write to the stand-in.
 type Commit struct {
+	Slug    string
 	Path    string
 	Message string
 	Data    []byte
@@ -81,16 +87,22 @@ func (m *Memory) ReadFile(_ context.Context, path string) ([]byte, error) {
 	return append([]byte{}, data...), nil
 }
 
-// WriteFile stores data at path and records the commit.
-func (m *Memory) WriteFile(_ context.Context, path string, data []byte, message string) error {
+// WriteFile stores data at path and records the commit with its slug. The
+// stand-in keeps one tree and has no branches, so a later ReadFile sees the
+// write (the real hub would show it on main only after the owner's merge).
+// It refuses a slug the real hub would refuse.
+func (m *Memory) WriteFile(_ context.Context, slug, path string, data []byte, message string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if !ValidSlug(slug) {
+		return ErrRefused
+	}
 	if m.down {
 		return ErrUnavailable
 	}
 	cp := append([]byte{}, data...)
 	m.files[path] = cp
-	m.commits = append(m.commits, Commit{Path: path, Message: message, Data: cp})
+	m.commits = append(m.commits, Commit{Slug: slug, Path: path, Message: message, Data: cp})
 	return nil
 }
 
@@ -99,4 +111,20 @@ func (m *Memory) Commits() []Commit {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]Commit{}, m.commits...)
+}
+
+// ValidSlug reports whether s matches ^[a-z0-9][a-z0-9-]{0,62}$: the only
+// slugs Chartroom turns into a branch name.
+func ValidSlug(s string) bool {
+	if s == "" || len(s) > 63 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' && i > 0 {
+			continue
+		}
+		return false
+	}
+	return true
 }
