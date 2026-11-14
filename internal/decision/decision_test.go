@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/ClearedStack/chartroom/internal/catalog"
+	"github.com/ClearedStack/chartroom/internal/cserr"
 	"github.com/ClearedStack/chartroom/internal/decision"
 	"github.com/ClearedStack/chartroom/internal/fixture"
 )
@@ -94,6 +95,48 @@ func TestPublishedEntryCarriesOnlyContractFields(t *testing.T) {
 		if contains(got, banned) {
 			t.Errorf("published catalog contains %q", banned)
 		}
+	}
+}
+
+func TestApplyCatalogRebuildsOwnEntryAndRejectsForeignCollisions(t *testing.T) {
+	dir := filepath.Join(fixture.Root, "apply", "ok-publish")
+	cat, err := catalog.Parse(fixture.Read(t, filepath.Join(dir, "want.catalog.json")), catalog.MaxBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, err := decision.Parse(fixture.Read(t, filepath.Join(dir, "decision.json")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	own := cat.Find(it.Slug)
+	if own == nil {
+		t.Fatalf("missing %s in fixture catalog", it.Slug)
+	}
+
+	// Rebuilding the same item with updated summary replaces its own entry.
+	rebuilt := *it
+	rebuiltEntry := *it.Entry
+	rebuiltEntry.Summary = "Updated summary on clean-room rebuild."
+	rebuilt.Entry = &rebuiltEntry
+	ch, err := decision.ApplyCatalog(cat, own, &rebuilt)
+	if err != nil || !ch.Changed || ch.After.Summary != rebuiltEntry.Summary {
+		t.Fatalf("own rebuild = %+v, %v", ch, err)
+	}
+
+	// Another item (own == nil) attempting to claim the same slug is E_NEEDS_SUBTOOL.
+	if _, err := decision.ApplyCatalog(cat, nil, &rebuilt); err == nil {
+		t.Fatal("foreign slug collision succeeded, want E_NEEDS_SUBTOOL")
+	} else if e, ok := cserr.From(err); !ok || e.Reason != cserr.UnsupportedCatalogState || e.Field != "slug" {
+		t.Fatalf("foreign slug collision = %v, want UnsupportedCatalogState slug", err)
+	}
+
+	// Changing an item's slug on rebuild has no rule to remove the old slug.
+	renamed := rebuilt
+	renamed.Slug = "renamed-tool"
+	if _, err := decision.ApplyCatalog(cat, own, &renamed); err == nil {
+		t.Fatal("slug rename on rebuild succeeded, want E_NEEDS_SUBTOOL")
+	} else if e, ok := cserr.From(err); !ok || e.Reason != cserr.UnsupportedCatalogState || e.Field != "slug" {
+		t.Fatalf("slug rename = %v, want UnsupportedCatalogState slug", err)
 	}
 }
 
