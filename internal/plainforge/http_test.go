@@ -88,26 +88,28 @@ func TestHTTPSmartGitEmptyInitIdempotentAndExternalCommits(t *testing.T) {
 		t.Fatalf("empty repo ReadFile = %v, want ErrNotFound", err)
 	}
 
-	// 2. First WriteFile creates a root commit on refs/heads/main.
+	// 2. First WriteFile creates a root commit on refs/heads/catalog/alpha and
+	// leaves main unborn.
 	v1 := []byte("{\n  \"contract\": \"v1\",\n  \"entries\": []\n}\n")
-	if err := hub.WriteFile(ctx, "catalog/tools.json", v1, "catalog: seed"); err != nil {
+	if err := hub.WriteFile(ctx, "alpha", "catalog/tools.json", v1, "catalog: seed"); err != nil {
 		t.Fatalf("first WriteFile: %v", err)
 	}
 	runGit(t, bareDir, "fsck", "--full", "--strict")
-
-	got, err := hub.ReadFile(ctx, "catalog/tools.json")
-	if err != nil || !bytes.Equal(got, v1) {
-		t.Fatalf("ReadFile after seed = %q, %v; want %q", got, err, v1)
+	if got := runGit(t, bareDir, "show", "refs/heads/catalog/alpha:catalog/tools.json"); got+"\n" != string(v1) {
+		t.Fatalf("branch file = %q, want %q", got, v1)
 	}
-	if n := runGit(t, bareDir, "rev-list", "--count", "refs/heads/main"); n != "1" {
+	if _, err := hub.ReadFile(ctx, "catalog/tools.json"); !errors.Is(err, plainforge.ErrNotFound) {
+		t.Fatalf("ReadFile with main unborn = %v, want ErrNotFound", err)
+	}
+	if n := runGit(t, bareDir, "rev-list", "--count", "refs/heads/catalog/alpha"); n != "1" {
 		t.Fatalf("commit count = %s, want 1", n)
 	}
 
 	// 3. Writing identical bytes is a no-op and makes no duplicate commit.
-	if err := hub.WriteFile(ctx, "catalog/tools.json", v1, "catalog: seed again"); err != nil {
+	if err := hub.WriteFile(ctx, "alpha", "catalog/tools.json", v1, "catalog: seed again"); err != nil {
 		t.Fatalf("idempotent WriteFile: %v", err)
 	}
-	if n := runGit(t, bareDir, "rev-list", "--count", "refs/heads/main"); n != "1" {
+	if n := runGit(t, bareDir, "rev-list", "--count", "refs/heads/catalog/alpha"); n != "1" {
 		t.Fatalf("commit count after no-op = %s, want 1", n)
 	}
 
@@ -116,8 +118,10 @@ func TestHTTPSmartGitEmptyInitIdempotentAndExternalCommits(t *testing.T) {
 	// in Git's tree sort order).
 	workDir := filepath.Join(rootDir, "work")
 	runGit(t, rootDir, "clone", bareDir, workDir)
+	runGit(t, workDir, "checkout", "--orphan", "main")
 	for rel, content := range map[string]string{
 		"app.yaml":               "name: clearedstack-site\n",
+		"catalog/tools.json":     "main-catalog\n",
 		"catalog-note.txt":       "sorts before catalog/ because '-' < '/'\n",
 		"catalog0.txt":           "sorts after catalog/ because '/' < '0'\n",
 		"src/app/tools/page.tsx": "export default function Tools() { return null }\n",
@@ -141,11 +145,11 @@ func TestHTTPSmartGitEmptyInitIdempotentAndExternalCommits(t *testing.T) {
 	runGit(t, workDir, "commit", "-m", "chore: pin app.yaml [skip-ci]")
 	runGit(t, workDir, "push", "origin", "main")
 
-	// 5. The warm HTTP client detects that refs/heads/main moved, splices only
-	// catalog/tools.json onto the new tip, and preserves every sibling file,
+	// 5. The warm HTTP client builds a new branch from main's tip, splices only
+	// catalog/tools.json onto it, and preserves every sibling file,
 	// directory sort order, and 100755 executable mode.
 	v2 := []byte("{\n  \"contract\": \"v1\",\n  \"entries\": [\n    {\"slug\": \"alpha\"}\n  ]\n}\n")
-	if err := hub.WriteFile(ctx, "catalog/tools.json", v2, "catalog: live alpha"); err != nil {
+	if err := hub.WriteFile(ctx, "beta", "catalog/tools.json", v2, "catalog: live beta"); err != nil {
 		t.Fatalf("WriteFile after external push: %v", err)
 	}
 	runGit(t, bareDir, "fsck", "--full", "--strict")
@@ -154,7 +158,7 @@ func TestHTTPSmartGitEmptyInitIdempotentAndExternalCommits(t *testing.T) {
 	// deltified packs cleanly.
 	for i := 0; i < 4; i++ {
 		next := []byte(fmt.Sprintf("{\n  \"contract\": \"v1\",\n  \"entries\": [{\"slug\": \"alpha-%d\", \"pad\": %q}]\n}\n", i, strings.Repeat("same-prefix-", 80)))
-		if err := hub.WriteFile(ctx, "catalog/tools.json", next, fmt.Sprintf("catalog: live alpha-%d", i)); err != nil {
+		if err := hub.WriteFile(ctx, "beta", "catalog/tools.json", next, fmt.Sprintf("catalog: live alpha-%d", i)); err != nil {
 			t.Fatalf("WriteFile %d: %v", i, err)
 		}
 	}
@@ -169,12 +173,15 @@ func TestHTTPSmartGitEmptyInitIdempotentAndExternalCommits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cold ReadFile after delta repack: %v", err)
 	}
-	if !bytes.Contains(latest, []byte(`"alpha-3"`)) {
-		t.Fatalf("unexpected latest content: %s", latest)
+	if string(latest) != "main-catalog\n" {
+		t.Fatalf("cold ReadFile = %q, want main's file", latest)
+	}
+	if got := runGit(t, bareDir, "show", "refs/heads/catalog/beta:catalog/tools.json"); !strings.Contains(got, `"alpha-3"`) {
+		t.Fatalf("unexpected branch content: %s", got)
 	}
 
-	// Verify sibling files and 100755 mode are intact in refs/heads/main.
-	treeListing := runGit(t, bareDir, "ls-tree", "-r", "refs/heads/main")
+	// Verify sibling files and 100755 mode are intact in refs/heads/catalog/beta.
+	treeListing := runGit(t, bareDir, "ls-tree", "-r", "refs/heads/catalog/beta")
 	for _, want := range []string{
 		"100644 blob ",
 		"\tapp.yaml",
@@ -229,7 +236,7 @@ func TestPlainforgeCapabilityAndRefusalRules(t *testing.T) {
 			}
 			w.Header().Set("Content-Type", "application/x-git-receive-pack-result")
 			_, _ = io.WriteString(w, pkt("unpack ok\n")+
-				pkt("ng refs/heads/main E_NEEDS_SUBTOOL: the ref changed since it was read; fetch and try again\n")+"0000")
+				pkt("ng refs/heads/catalog/alpha E_NEEDS_SUBTOOL: the ref changed since it was read; fetch and try again\n")+"0000")
 		default:
 			http.Error(w, "private-server-detail", http.StatusServiceUnavailable)
 		}
@@ -240,7 +247,7 @@ func TestPlainforgeCapabilityAndRefusalRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = hub.WriteFile(context.Background(), "catalog/tools.json", []byte("{}\n"), "catalog: test")
+	err = hub.WriteFile(context.Background(), "alpha", "catalog/tools.json", []byte("{}\n"), "catalog: test")
 	if !errors.Is(err, plainforge.ErrUnavailable) {
 		t.Fatalf("concurrent ref race = %v, want ErrUnavailable", err)
 	}
