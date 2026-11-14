@@ -1,1 +1,1 @@
-E_NEEDS_SUBTOOL schema_version_mismatch contract_version: the schema version is not supported
+E_NEEDS_SUBTOOL schema_version_mismatch contract: the schema version is not supported

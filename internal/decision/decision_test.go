@@ -9,24 +9,50 @@ import (
 	"github.com/ClearedStack/chartroom/internal/fixture"
 )
 
-// TestTransitionsMatchTheSpecification pins the state table from SPEC.md.
-func TestTransitionsMatchTheSpecification(t *testing.T) {
+// TestTransitionsMatchMustersContract pins Chartroom's four rows in the
+// table of queue steps in Muster's contract v1.
+func TestTransitionsMatchMustersContract(t *testing.T) {
 	want := map[string]decision.Transition{
 		"publish": {From: "building", To: "live"},
-		"link":    {From: "scored", To: "linked"},
-		"merge":   {From: "scored", To: "merged"},
-		"retire":  {From: "live", To: "retired"},
+		"link":    {From: "linked", To: "linked"},
+		"merge":   {From: "merged", To: "merged"},
+		"retire":  {From: "retired", To: "retired"},
 	}
 	if len(decision.Transitions) != len(want) {
-		t.Fatalf("there are %d transitions, the specification has %d", len(decision.Transitions), len(want))
+		t.Fatalf("there are %d transitions, the contract has %d rows for Chartroom", len(decision.Transitions), len(want))
 	}
 	for action, tr := range want {
 		if decision.Transitions[action] != tr {
 			t.Errorf("%s = %+v, want %+v", action, decision.Transitions[action], tr)
 		}
+		if got, ok := decision.ActionFor(tr.From); !ok || got != action {
+			t.Errorf("ActionFor(%q) = %q, %v", tr.From, got, ok)
+		}
+	}
+	for _, state := range []string{"", "scored", "live", "approved", "needs_subtool", "screened_out"} {
+		if action, ok := decision.ActionFor(state); ok {
+			t.Errorf("ActionFor(%q) = %q; Chartroom holds no item in that state", state, action)
+		}
 	}
 	if decision.RequiredConditions != 5 {
 		t.Errorf("RequiredConditions = %d, the specification says 5", decision.RequiredConditions)
+	}
+}
+
+// TestValidItemID pins the identifier form from Muster's contract:
+// ^PA-([0-9]{4}|[1-9][0-9]{4,8})$.
+func TestValidItemID(t *testing.T) {
+	good := []string{"PA-0001", "PA-0417", "PA-9999", "PA-10000", "PA-123456789"}
+	bad := []string{"", "PA-", "PA-001", "PA-01234", "PA-1234567890", "pa-0001", "EP-0001", "PA-00a1", "PA-0001 ", " PA-0001", "PA-0001.1", "incident:PA-0001"}
+	for _, s := range good {
+		if !decision.ValidItemID(s) {
+			t.Errorf("ValidItemID(%q) = false", s)
+		}
+	}
+	for _, s := range bad {
+		if decision.ValidItemID(s) {
+			t.Errorf("ValidItemID(%q) = true", s)
+		}
 	}
 }
 
@@ -64,7 +90,7 @@ func TestApplyDoesNotAlterItsInput(t *testing.T) {
 // no item identifier, no state.
 func TestPublishedEntryCarriesOnlyContractFields(t *testing.T) {
 	got := string(fixture.Read(t, filepath.Join(fixture.Root, "apply", "ok-publish", "want.catalog.json")))
-	for _, banned := range []string{"attestation", "conditions", "item_id", "itm-0101", "building", "snapshot"} {
+	for _, banned := range []string{"attestation", "conditions", "\"id\"", "PA-0101", "building", "snapshot"} {
 		if contains(got, banned) {
 			t.Errorf("published catalog contains %q", banned)
 		}

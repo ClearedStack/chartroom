@@ -1,8 +1,8 @@
 {
-  "contract_version": "v1",
-  "item_id": "itm-0102",
+  "contract": "v1",
+  "id": "PA-0102",
   "action": "link",
-  "from": "scored",
+  "from": "linked",
   "to": "linked",
   "slug": "sample-rate-lookup",
   "changed": true,

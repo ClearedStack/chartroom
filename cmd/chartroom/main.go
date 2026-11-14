@@ -18,7 +18,6 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"sort"
-	"strings"
 	"syscall"
 	"time"
 
@@ -75,7 +74,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	// The contract version is owned outside this repository. If the
 	// environment asks for one this build does not know, stop here.
 	if v := getenv("CONTRACT_VERSION"); v != "" && v != catalog.ContractVersion {
-		return fail(stderr, cserr.At(cserr.SchemaVersionMismatch, "contract_version"))
+		return fail(stderr, cserr.At(cserr.SchemaVersionMismatch, "contract"))
 	}
 	switch args[0] {
 	case "apply":
@@ -229,16 +228,10 @@ func cmdRun(args []string, getenv func(string) string, stdout, stderr io.Writer)
 		return usageError(stderr, muster.ErrBadAddress.Error())
 	}
 	cfg.Once = *once
-	log.Info("started", "version", Version, "contract_version", catalog.ContractVersion, "staged", sp.Len())
+	log.Info("started", "version", Version, "contract", catalog.ContractVersion, "staged", sp.Len())
 	worker.New(cfg, client, sp, worker.SystemClock{}, log).Run(ctx)
 	log.Info("stopped", "staged", sp.Len())
 	return exitOK
-}
-
-// seed is one file in the -items directory.
-type seed struct {
-	Priority string          `json:"priority"`
-	Item     json.RawMessage `json:"item"`
 }
 
 // standaloneReport is what a stand-alone run prints.
@@ -248,9 +241,10 @@ type standaloneReport struct {
 }
 
 // runStandalone runs the whole worker loop with no other component: an
-// in-memory Muster seeded from a directory of items, committing to an
-// in-memory hub repository seeded from a catalog file. It prints what
-// happened to each item, in the order the results reached Muster, and the
+// in-memory Muster seeded from a directory of items, each as Muster would
+// hold it (id, state, lane and the results of earlier workers), committing
+// to an in-memory hub repository seeded from a catalog file. It prints
+// what happened to each item, in the order the steps ended, and the
 // catalog that results.
 func runStandalone(ctx context.Context, cfg worker.Config, sp *spool.Spool, log *slog.Logger,
 	catalogPath, itemsDir string, stdout, stderr io.Writer) int {
@@ -266,26 +260,17 @@ func runStandalone(ctx context.Context, cfg worker.Config, sp *spool.Spool, log 
 
 	hub := plainforge.NewMemory()
 	_ = hub.WriteFile(ctx, muster.CatalogPath, catalogData, "seed")
-	m := muster.NewMemory(hub, time.Now, time.Minute)
+	m := muster.NewMemory(hub, time.Now, muster.LeaseLength)
 	for _, name := range names {
-		data, err := readInput(name, decision.MaxItemBytes+1024)
+		data, err := readInput(name, decision.MaxItemBytes)
 		if err != nil {
 			return usageError(stderr, "an item file cannot be read")
 		}
-		var s seed
-		if err := json.Unmarshal(data, &s); err != nil {
-			return usageError(stderr, "an item file is not a JSON object with priority and item")
+		var seed muster.Seed
+		if err := json.Unmarshal(data, &seed); err != nil {
+			return usageError(stderr, "an item file is not a JSON object with id, state, lane and results")
 		}
-		// An item is known by its own identifier when it has a usable
-		// one, and by its file name when it does not.
-		id := strings.TrimSuffix(filepath.Base(name), ".json")
-		var probe struct {
-			ItemID string `json:"item_id"`
-		}
-		if json.Unmarshal(s.Item, &probe) == nil && catalog.ValidSlug(probe.ItemID) {
-			id = probe.ItemID
-		}
-		m.Seed(id, s.Priority, s.Item)
+		m.Seed(seed)
 	}
 
 	cfg.Once = true

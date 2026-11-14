@@ -1,24 +1,34 @@
 {
-  "priority": "normal",
-  "item": {
-    "contract_version": "v1",
-    "item_id": "itm-0102",
-    "state": "scored",
-    "action": "link",
-    "slug": "sample-rate-lookup",
-    "entry": {
-      "title": "Sample Rate Lookup",
-      "summary": "Looks up a made-up rate in the table that Example Rule 900.18 points to."
+  "id": "PA-0102",
+  "state": "linked",
+  "lane": "normal",
+  "results": {
+    "trawl": {
+      "source": "made-up source"
     },
-    "link": {
-      "name": "Example Rate Table",
-      "url": "https://tools.example/rate-table"
+    "sextant": {
+      "job": "made-up job"
     },
-    "provenance": {
-      "note": "Linked, not rebuilt: an existing free tool already covers Example Rule 900.18.",
-      "links": [
-        "https://rules.example/part-900/section-18"
-      ]
+    "assay": {
+      "score": 71
+    },
+    "countersign": {
+      "decision": "link",
+      "slug": "sample-rate-lookup",
+      "entry": {
+        "title": "Sample Rate Lookup",
+        "summary": "Looks up a made-up rate in the table that Example Rule 900.18 points to."
+      },
+      "link": {
+        "name": "Example Rate Table",
+        "url": "https://tools.example/rate-table"
+      },
+      "provenance": {
+        "note": "Linked, not rebuilt: an existing free tool already covers Example Rule 900.18.",
+        "links": [
+          "https://rules.example/part-900/section-18"
+        ]
+      }
     }
   }
 }

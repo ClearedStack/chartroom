@@ -1,5 +1,5 @@
 {
-  "contract_version": "v1",
+  "contract": "v1",
   "entries": [
     {
       "slug": "sample-date-counter",
@@ -24,4 +24,4 @@
       "summary": "Fills in the made-up Example Form 12 from a spreadsheet.",
       "repository": "https://forge.example/tools/sample-form-filler",
       "provenance": {
-        "note": "Built from the public text of Example Rule 900.44 as published at rules.example. Written from scratch: no code, text or des
+        "note": "Built from the public text of Example Rule 900.44 as published at rules.example. Written from scratch: no code, text or design w

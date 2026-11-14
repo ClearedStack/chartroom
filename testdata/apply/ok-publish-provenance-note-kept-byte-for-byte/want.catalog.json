@@ -1,5 +1,5 @@
 {
-  "contract_version": "v1",
+  "contract": "v1",
   "entries": [
     {
       "slug": "sample-clause-finder",
@@ -8,7 +8,7 @@
       "summary": "Finds the clauses that Example Rule 900.12 says a made-up contract must carry.",
       "repository": "https://forge.example/tools/sample-clause-finder",
       "provenance": {
-        "note": "  Source:\tExample Rule 900.12 <rules.example> & its annex — “as published”.\nNothing was copied.\n",
+        "note": "  Source:\tExample Rule 900.12 <rules.example> & its annex, “as published” (§ 3).\nNothing was copied.\n",
         "links": [
           "https://rules.example/part-900/section-12",
           "https://forge.example/tools/sample-clause-finder/src/NOTICE"

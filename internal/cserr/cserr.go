@@ -43,6 +43,8 @@ var (
 	UnsupportedCatalogState = Reason{NeedsSubtool, "unsupported_catalog_state", "no rule covers the current catalog state of this entry"}
 	UnsupportedValue        = Reason{NeedsSubtool, "unsupported_value", "no rule covers this value"}
 
+	UpstreamRefused = Reason{Parse, "upstream_refused", "an upstream service refused the request"}
+
 	UpstreamTimeout = Reason{Timeout, "upstream_timeout", "an upstream service did not answer in time"}
 )
 
@@ -50,7 +52,7 @@ var (
 func Reasons() []Reason {
 	return []Reason{
 		MalformedJSON, UnknownField, InvalidMetadata, MissingProvenance,
-		MissingAttestation, InvalidCatalog,
+		MissingAttestation, InvalidCatalog, UpstreamRefused,
 		UnsupportedEntryType, SchemaVersionMismatch, UnsupportedTransition,
 		UnsupportedCatalogState, UnsupportedValue,
 		UpstreamTimeout,

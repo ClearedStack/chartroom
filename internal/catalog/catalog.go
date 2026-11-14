@@ -109,13 +109,13 @@ func Equal(a, b *Entry) bool { return reflect.DeepEqual(a, b) }
 
 // Catalog is the catalog file.
 type Catalog struct {
-	ContractVersion string  `json:"contract_version"`
-	Entries         []Entry `json:"entries"`
+	Contract string  `json:"contract"`
+	Entries  []Entry `json:"entries"`
 }
 
 // Empty returns a catalog with no entries.
 func Empty() *Catalog {
-	return &Catalog{ContractVersion: ContractVersion, Entries: []Entry{}}
+	return &Catalog{Contract: ContractVersion, Entries: []Entry{}}
 }
 
 // Parse reads a catalog. It returns E_NEEDS_SUBTOOL when the schema
@@ -126,13 +126,13 @@ func Parse(data []byte, limit int) (*Catalog, error) {
 		return nil, cserr.New(cserr.InvalidCatalog)
 	}
 	var probe struct {
-		ContractVersion *string `json:"contract_version"`
+		Contract *string `json:"contract"`
 	}
-	if err := json.Unmarshal(data, &probe); err != nil || probe.ContractVersion == nil {
+	if err := json.Unmarshal(data, &probe); err != nil || probe.Contract == nil {
 		return nil, cserr.New(cserr.InvalidCatalog)
 	}
-	if *probe.ContractVersion != ContractVersion {
-		return nil, cserr.At(cserr.SchemaVersionMismatch, "catalog.contract_version")
+	if *probe.Contract != ContractVersion {
+		return nil, cserr.At(cserr.SchemaVersionMismatch, "catalog.contract")
 	}
 	var c Catalog
 	if err := strictjson.Decode(data, limit, &c); err != nil || c.Entries == nil {
@@ -141,20 +141,48 @@ func Parse(data []byte, limit int) (*Catalog, error) {
 	seen := make(map[string]struct{}, len(c.Entries))
 	for i := range c.Entries {
 		e := &c.Entries[i]
-		switch e.Status {
-		case StatusLive, StatusLinked, StatusMerged, StatusRetired:
-		case "":
-			return nil, cserr.New(cserr.InvalidCatalog)
-		default:
-			return nil, cserr.At(cserr.UnsupportedEntryType, "catalog.entries.status")
+		if err := e.check("catalog.entries.status"); err != nil {
+			return nil, err
 		}
-		if _, dup := seen[e.Slug]; dup || !e.valid() {
+		if _, dup := seen[e.Slug]; dup {
 			return nil, cserr.New(cserr.InvalidCatalog)
 		}
 		seen[e.Slug] = struct{}{}
 	}
 	c.sort()
 	return &c, nil
+}
+
+// check reports what is wrong with an entry, if anything: a status this
+// build does not know is E_NEEDS_SUBTOOL, any other fault is E_PARSE.
+func (e *Entry) check(statusField string) error {
+	switch e.Status {
+	case StatusLive, StatusLinked, StatusMerged, StatusRetired:
+	case "":
+		return cserr.New(cserr.InvalidCatalog)
+	default:
+		return cserr.At(cserr.UnsupportedEntryType, statusField)
+	}
+	if !e.valid() {
+		return cserr.New(cserr.InvalidCatalog)
+	}
+	return nil
+}
+
+// MaxEntryBytes is the largest single entry Chartroom will read.
+const MaxEntryBytes = 64 << 10
+
+// ParseEntry reads one catalog entry on its own, as strictly as Parse
+// reads a catalog.
+func ParseEntry(data []byte) (*Entry, error) {
+	var e Entry
+	if err := strictjson.Decode(data, MaxEntryBytes, &e); err != nil {
+		return nil, cserr.New(cserr.InvalidCatalog)
+	}
+	if err := e.check("status"); err != nil {
+		return nil, err
+	}
+	return &e, nil
 }
 
 func (c *Catalog) sort() {
@@ -201,7 +229,7 @@ func (c *Catalog) Subset(slugs ...string) *Catalog {
 // Encode writes the catalog in its one canonical form: entries in slug
 // order, two-space indent, one trailing newline.
 func (c *Catalog) Encode() []byte {
-	out := Catalog{ContractVersion: c.ContractVersion, Entries: append([]Entry{}, c.Entries...)}
+	out := Catalog{Contract: c.Contract, Entries: append([]Entry{}, c.Entries...)}
 	out.sort()
 	return strictjson.Marshal(out)
 }

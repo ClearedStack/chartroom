@@ -1,0 +1,2 @@
+{"level":"INFO","msg":"staged","id":"PA-0102","outcome":"needs_subtool","code":"E_NEEDS_SUBTOOL","reason":"unsupported_transition","field":"state"}
+{"level":"WARN","msg":"move_not_allowed","id":"PA-0102","outcome":"needs_subtool","code":"E_PARSE","reason":"upstream_refused"}

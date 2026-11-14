@@ -1,6 +1,6 @@
 {
-  "contract_version": "v1",
-  "item_id": "itm-0101",
+  "contract": "v1",
+  "id": "PA-0101",
   "state": "building",
   "action": "publish",
   "slug": "sample-clause-finder",
@@ -12,7 +12,7 @@
     "repository": "https://forge.example/tools/sample-clause-finder"
   },
   "provenance": {
-    "note": "  Source:\tExample Rule 900.12 <rules.example> & its annex — “as published”.\nNothing was copied.\n",
+    "note": "  Source:\tExample Rule 900.12 <rules.example> & its annex, “as published” (§ 3).\nNothing was copied.\n",
     "links": [
       "https://rules.example/part-900/section-12",
       "https://forge.example/tools/sample-clause-finder/src/NOTICE"

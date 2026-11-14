@@ -1,5 +1,5 @@
 {
-  "contract_version": "v1",
+  "contract": "v1",
   "entries": [
     {
       "slug": "sample-date-counter",

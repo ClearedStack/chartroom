@@ -1,18 +1,18 @@
-// Package worker is Chartroom's loop: lease items from Muster, work out
-// each catalog change, stage the result on disk and hand it to Muster,
+// Package worker is Chartroom's loop: lease a step from Muster, work out
+// the catalog entry, stage the result on disk and hand it to Muster,
 // trying again with backoff until Muster acknowledges.
 //
-// The loop runs in one goroutine and reads the time from a Clock, so the
+// Muster hands out one step per lease call and decides the order: urgent
+// lane first, then normal, then backfill. The loop takes the steps as they
+// come. It runs in one goroutine and reads the time from a Clock, so the
 // same sequence of answers from Muster always gives the same sequence of
 // calls.
 package worker
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
-	"sort"
 	"time"
 
 	"github.com/ClearedStack/chartroom/internal/catalog"
@@ -20,10 +20,8 @@ import (
 	"github.com/ClearedStack/chartroom/internal/decision"
 	"github.com/ClearedStack/chartroom/internal/muster"
 	"github.com/ClearedStack/chartroom/internal/spool"
+	"github.com/ClearedStack/chartroom/internal/strictjson"
 )
-
-// MaxContextBytes is the largest catalog context accepted with one lease.
-const MaxContextBytes = 256 << 10
 
 // Clock is the worker's only source of time.
 type Clock interface {
@@ -48,15 +46,14 @@ func (SystemClock) Sleep(ctx context.Context, d time.Duration) {
 	}
 }
 
-// Config sets the worker's pace. The specification gives none of these
+// Config sets the worker's pace. Neither specification gives these
 // numbers, so they are settings with fixed defaults.
 type Config struct {
-	// Batch is the most items leased in one call.
-	Batch int
 	// PollInterval is the wait after Muster had nothing to lease.
 	PollInterval time.Duration
 	// HeartbeatEvery is how often a lease with a staged result is kept
-	// alive while Muster has not acknowledged the result.
+	// while Muster has not acknowledged the result. It has to be well
+	// under Muster's lease length, which is 60 seconds by default.
 	HeartbeatEvery time.Duration
 	// CallTimeout bounds one call to Muster.
 	CallTimeout time.Duration
@@ -73,7 +70,6 @@ type Config struct {
 // DefaultConfig returns the default pace.
 func DefaultConfig() Config {
 	return Config{
-		Batch:          4,
 		PollInterval:   5 * time.Second,
 		HeartbeatEvery: 20 * time.Second,
 		CallTimeout:    10 * time.Second,
@@ -115,7 +111,7 @@ type Worker struct {
 }
 
 // New returns a worker. Results already in the spool are sent before any
-// new item is leased.
+// new step is leased.
 func New(cfg Config, m muster.Client, s *spool.Spool, clock Clock, log *slog.Logger) *Worker {
 	return &Worker{cfg: cfg, muster: m, spool: s, clock: clock, log: log}
 }
@@ -134,8 +130,9 @@ func (w *Worker) Run(ctx context.Context) {
 	}
 }
 
-// step does one round. progressed means there is more to do straight away;
-// idle means Muster had nothing to lease and nothing is staged.
+// step does one round: send what is staged, then lease one step and stage
+// its result. progressed means there is more to do straight away; idle
+// means Muster had nothing to lease and nothing is staged.
 func (w *Worker) step(ctx context.Context) (progressed, idle bool) {
 	now := w.clock.Now()
 	w.beat(ctx, now)
@@ -145,25 +142,16 @@ func (w *Worker) step(ctx context.Context) (progressed, idle bool) {
 	if !w.flush(ctx) {
 		return false, false
 	}
-	leases, err := w.lease(ctx)
+	grant, err := w.lease(ctx)
 	if err != nil {
 		w.unacknowledged(err)
 		return false, false
 	}
-	if len(leases) == 0 {
+	if grant == nil {
 		w.failures = 0
 		return false, true
 	}
-	sort.SliceStable(leases, func(i, j int) bool {
-		return muster.PriorityRank(leases[i].Priority) < muster.PriorityRank(leases[j].Priority)
-	})
-	staged := 0
-	for _, l := range leases {
-		if w.stage(l) {
-			staged++
-		}
-	}
-	if staged == 0 {
+	if !w.stage(*grant) {
 		// Muster answered, but with nothing that could be staged. Wait
 		// before asking again, so a bad answer cannot spin the loop.
 		w.unacknowledged(muster.ErrBadResponse)
@@ -195,10 +183,24 @@ func (w *Worker) call(ctx context.Context) (context.Context, context.CancelFunc)
 	return context.WithTimeout(ctx, w.cfg.CallTimeout)
 }
 
-func (w *Worker) lease(ctx context.Context) ([]muster.Lease, error) {
+func (w *Worker) lease(ctx context.Context) (*muster.Grant, error) {
 	ctx, cancel := w.call(ctx)
 	defer cancel()
-	return w.muster.Lease(ctx, w.cfg.Batch)
+	return w.muster.Lease(ctx)
+}
+
+// reasonFor names, in Chartroom's own fixed words, why a call to Muster
+// did not go through. Nothing Muster sent is repeated.
+func reasonFor(err error) cserr.Reason {
+	switch {
+	case errors.Is(err, muster.ErrBadResponse):
+		return cserr.MalformedJSON
+	case errors.Is(err, muster.ErrUnknownContract):
+		return cserr.SchemaVersionMismatch
+	case errors.Is(err, muster.ErrRefused), errors.Is(err, muster.ErrMoveNotAllowed), errors.Is(err, muster.ErrLeaseNotHeld):
+		return cserr.UpstreamRefused
+	}
+	return cserr.UpstreamTimeout
 }
 
 // unacknowledged records a call Muster did not acknowledge and sets the
@@ -207,26 +209,33 @@ func (w *Worker) unacknowledged(err error) {
 	w.failures++
 	delay := Backoff(w.cfg.BackoffBase, w.cfg.BackoffCap, w.failures)
 	w.notBefore = w.clock.Now().Add(delay)
-	reason := cserr.UpstreamTimeout
-	if errors.Is(err, muster.ErrBadResponse) {
-		reason = cserr.MalformedJSON
-	}
+	reason := reasonFor(err)
 	w.log.Warn("retry", "code", string(reason.Code), "reason", reason.Name,
 		"attempt", w.failures, "delay_ms", delay.Milliseconds(), "staged", w.spool.Len())
 }
 
-// flush sends every staged result, most urgent first. It stops at the
-// first one Muster does not acknowledge and reports false.
+// flush sends every staged result, most urgent lane first. A result Muster
+// acknowledges or refuses for good leaves the spool. It stops at the first
+// one Muster does not answer and reports false.
 func (w *Worker) flush(ctx context.Context) bool {
 	for _, rec := range w.spool.Pending() {
 		err := w.send(ctx, rec)
 		switch {
 		case err == nil:
 			w.failures = 0
-			w.drop(rec, "acknowledged")
-		case errors.Is(err, muster.ErrLeaseGone):
+			w.drop(rec, "acknowledged", nil)
+		case errors.Is(err, muster.ErrLeaseNotHeld):
+			// The lease ended or was taken over. Muster offers the step
+			// again if it still needs doing.
 			w.failures = 0
-			w.drop(rec, "lease_gone")
+			w.drop(rec, "lease_not_held", nil)
+		case errors.Is(err, muster.ErrMoveNotAllowed):
+			w.failures = 0
+			w.drop(rec, "move_not_allowed", err)
+		case errors.Is(err, muster.ErrRefused), errors.Is(err, muster.ErrUnknownContract):
+			// Sending the same result again cannot help.
+			w.failures = 0
+			w.drop(rec, "refused", err)
 		default:
 			w.unacknowledged(err)
 			return false
@@ -240,24 +249,31 @@ func (w *Worker) send(ctx context.Context, rec spool.Record) error {
 	defer cancel()
 	switch rec.Outcome {
 	case spool.OutcomeComplete:
-		return w.muster.Complete(ctx, rec.LeaseID, rec.Change)
+		return w.muster.Complete(ctx, rec.Lease, rec.State, rec.Result)
 	case spool.OutcomeFail:
-		return w.muster.Fail(ctx, rec.LeaseID, *rec.Report)
+		return w.muster.Fail(ctx, rec.Lease, rec.Code)
 	default:
-		return w.muster.NeedsSubtool(ctx, rec.LeaseID, *rec.Report)
+		return w.muster.NeedsSubtool(ctx, rec.Lease)
 	}
 }
 
-func (w *Worker) drop(rec spool.Record, event string) {
-	if err := w.spool.Remove(rec.LeaseID); err != nil {
-		w.log.Error("spool_remove_failed", "item_id", rec.ItemID)
+// drop takes a result out of the spool and logs why. refusal is the error
+// Muster's refusal was read as, when the result was refused.
+func (w *Worker) drop(rec spool.Record, event string, refusal error) {
+	if err := w.spool.Remove(rec.Lease); err != nil {
+		w.log.Error("spool_remove_failed", "id", rec.ID)
 		return
 	}
-	w.log.Info(event, "item_id", rec.ItemID, "outcome", rec.Outcome)
+	if refusal == nil {
+		w.log.Info(event, "id", rec.ID, "outcome", rec.Outcome)
+		return
+	}
+	reason := reasonFor(refusal)
+	w.log.Warn(event, "id", rec.ID, "outcome", rec.Outcome, "code", string(reason.Code), "reason", reason.Name)
 }
 
-// beat keeps alive the leases whose results are staged and not yet
-// acknowledged. A lease Muster no longer holds has its result dropped.
+// beat keeps the leases whose results are staged and not yet acknowledged.
+// A lease Muster no longer holds has its result dropped.
 func (w *Worker) beat(ctx context.Context, now time.Time) {
 	if w.spool.Len() == 0 {
 		w.nextBeat = time.Time{}
@@ -273,50 +289,58 @@ func (w *Worker) beat(ctx context.Context, now time.Time) {
 	w.nextBeat = now.Add(w.cfg.HeartbeatEvery)
 	for _, rec := range w.spool.Pending() {
 		cctx, cancel := w.call(ctx)
-		err := w.muster.Heartbeat(cctx, rec.LeaseID)
+		err := w.muster.Heartbeat(cctx, rec.Lease)
 		cancel()
-		if errors.Is(err, muster.ErrLeaseGone) {
-			w.drop(rec, "lease_gone")
+		if errors.Is(err, muster.ErrLeaseNotHeld) {
+			w.drop(rec, "lease_not_held", nil)
 		}
 	}
 }
 
-// stage works out the result for one lease and puts it in the spool. It
-// reports whether the result was staged.
-func (w *Worker) stage(l muster.Lease) bool {
-	if l.LeaseID == "" {
+// stage works out the result for one leased step and puts it in the spool.
+// It reports whether the result was staged.
+func (w *Worker) stage(g muster.Grant) bool {
+	if g.Lease == "" {
 		// Without a lease there is nothing to report against.
 		w.log.Warn("lease_unusable", "code", string(cserr.Parse), "reason", cserr.InvalidMetadata.Name)
 		return false
 	}
-	rec := Evaluate(l)
+	rec := Evaluate(g)
 	if err := w.spool.Put(rec); err != nil {
-		// Not staged means not sent. The lease lapses and Muster hands
-		// the item out again.
-		w.log.Error("spool_write_failed", "item_id", rec.ItemID)
+		// Not staged means not sent. The lease runs out and Muster
+		// offers the step again.
+		w.log.Error("spool_write_failed", "id", rec.ID)
 		return false
 	}
-	attrs := []any{"item_id", rec.ItemID, "outcome", rec.Outcome}
-	if rec.Report != nil {
-		attrs = append(attrs, "code", rec.Report.Code, "reason", rec.Report.Reason)
+	attrs := []any{"id", rec.ID, "outcome", rec.Outcome}
+	if rec.Code != "" {
+		attrs = append(attrs, "code", rec.Code, "reason", rec.Reason)
+		if rec.Field != "" {
+			attrs = append(attrs, "field", rec.Field)
+		}
 	}
 	w.log.Info("staged", attrs...)
 	return true
 }
 
-// Evaluate turns one lease into the record to stage: the catalog change,
-// or the fixed report of why there is none. It is a pure function.
-func Evaluate(l muster.Lease) spool.Record {
+// Evaluate turns one leased step into the record to stage: the state and
+// the catalog entry to complete it with, or the fixed code and reason why
+// there is none. It is a pure function.
+func Evaluate(g muster.Grant) spool.Record {
 	rec := spool.Record{
-		ContractVersion: catalog.ContractVersion,
-		LeaseID:         l.LeaseID,
-		Priority:        l.Priority,
+		Contract: catalog.ContractVersion,
+		Lease:    g.Lease,
+		Lane:     g.Lane,
 	}
-	change, itemID, err := evaluate(l)
-	rec.ItemID = itemID
+	if decision.ValidItemID(g.ID) {
+		// Only an identifier of the contract's form is kept or logged.
+		rec.ID = g.ID
+	}
+	change, err := evaluate(g)
 	if err == nil {
 		rec.Outcome = spool.OutcomeComplete
-		rec.Change = change.Encode()
+		rec.State = change.To
+		rec.Result = strictjson.Marshal(change.After)
 		return rec
 	}
 	e, ok := cserr.From(err)
@@ -327,44 +351,29 @@ func Evaluate(l muster.Lease) spool.Record {
 	if e.Reason.Code == cserr.NeedsSubtool {
 		rec.Outcome = spool.OutcomeNeedsSubtool
 	}
-	rec.Report = &muster.Report{
-		Code:    string(e.Reason.Code),
-		Reason:  e.Reason.Name,
-		Field:   e.Field,
-		Message: e.Reason.Message,
-	}
+	rec.Code, rec.Reason, rec.Field = string(e.Reason.Code), e.Reason.Name, e.Field
 	return rec
 }
 
-// itemID reads the identifier out of an item that may be refused, so the
-// record and the log can still say which item it was. It is used only when
-// it has the shape of an identifier; anything else is left out.
-func itemID(item []byte) string {
-	var probe struct {
-		ItemID string `json:"item_id"`
-	}
-	if json.Unmarshal(item, &probe) != nil || !catalog.ValidSlug(probe.ItemID) {
-		return ""
-	}
-	return probe.ItemID
-}
-
-func evaluate(l muster.Lease) (*decision.Change, string, error) {
-	it, err := decision.Parse(l.Item)
-	if err != nil {
-		return nil, itemID(l.Item), err
-	}
-	switch l.Priority {
-	case muster.PriorityUrgent, muster.PriorityNormal, muster.PriorityBackfill:
+func evaluate(g muster.Grant) (*decision.Change, error) {
+	switch g.Kind {
+	case muster.KindItem:
 	case "":
-		return nil, it.ItemID, cserr.At(cserr.InvalidMetadata, "priority")
+		return nil, cserr.At(cserr.InvalidMetadata, "kind")
 	default:
-		return nil, it.ItemID, cserr.At(cserr.UnsupportedValue, "priority")
+		// A proposal or an incident: valid, and not Chartroom's to do.
+		return nil, cserr.At(cserr.UnsupportedEntryType, "kind")
 	}
-	cat, err := catalog.Parse(l.Catalog, MaxContextBytes)
+	it, own, err := decision.FromResults(g.ID, g.State, g.Results)
 	if err != nil {
-		return nil, it.ItemID, err
+		return nil, err
 	}
-	ch, err := decision.Apply(cat, it)
-	return ch, it.ItemID, err
+	switch g.Lane {
+	case muster.LaneUrgent, muster.LaneNormal, muster.LaneBackfill:
+	case "":
+		return nil, cserr.At(cserr.InvalidMetadata, "lane")
+	default:
+		return nil, cserr.At(cserr.UnsupportedValue, "lane")
+	}
+	return decision.ApplyOwn(own, it)
 }

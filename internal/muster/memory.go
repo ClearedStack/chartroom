@@ -4,69 +4,103 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/ClearedStack/chartroom/internal/catalog"
-	"github.com/ClearedStack/chartroom/internal/decision"
 	"github.com/ClearedStack/chartroom/internal/plainforge"
-	"github.com/ClearedStack/chartroom/internal/strictjson"
 )
 
 // CatalogPath is where the stand-in keeps the catalog in the hub
 // repository.
 const CatalogPath = "catalog/tools.json"
 
-// Stand-in item statuses.
+// LeaseLength is how long a lease lasts in Muster unless it is configured
+// otherwise.
+const LeaseLength = 60 * time.Second
+
+// What the stand-in says about where an item stands.
 const (
-	StatusPending      = "pending"
-	StatusLeased       = "leased"
-	StatusCompleted    = "completed"
-	StatusFailed       = "failed"
-	StatusNeedsSubtool = "needs_subtool"
-	StatusRejected     = "rejected"
+	StatusWaiting   = "waiting"   // a step for Chartroom is in the queue
+	StatusLeased    = "leased"    // Chartroom holds the step
+	StatusCompleted = "completed" // the step is done
+	StatusStopped   = "stopped"   // stopped by E_PARSE until the owner releases it
+	StatusPaused    = "paused"    // paused in needs_subtool
 )
+
+// rows are Chartroom's rows in Muster's table of queue steps: the state an
+// item is held in and the state the step completes it to.
+var rows = map[string]string{
+	"building": "live",
+	"linked":   "linked",
+	"merged":   "merged",
+	"retired":  "retired",
+}
+
+// pausable lists the states Muster's state table lets an item be paused
+// from. None of them is a state Chartroom holds an item in.
+var pausable = map[string]bool{"recorded": true, "observed": true, "approved": true}
+
+// Seed is an item on record with a step waiting for Chartroom, as Muster
+// would hold it: its state, its lane and what earlier workers recorded.
+type Seed struct {
+	ID      string                     `json:"id"`
+	State   string                     `json:"state"`
+	Lane    string                     `json:"lane"`
+	Found   json.RawMessage            `json:"found,omitempty"`
+	Results map[string]json.RawMessage `json:"results,omitempty"`
+}
 
 // Outcome is what the stand-in knows about one item.
 type Outcome struct {
-	ItemID   string `json:"item_id"`
-	Priority string `json:"priority"`
-	Status   string `json:"status"`
-	State    string `json:"state,omitempty"`
-	Code     string `json:"code,omitempty"`
-	Reason   string `json:"reason,omitempty"`
-	Field    string `json:"field,omitempty"`
+	ID      string `json:"id"`
+	Lane    string `json:"lane"`
+	State   string `json:"state"`
+	Status  string `json:"status"`
+	Attempt int    `json:"attempt"`
+	Code    string `json:"code,omitempty"`
+}
+
+type finished struct {
+	lease, call, arg string
 }
 
 type memItem struct {
-	id       string
-	priority string
-	payload  []byte
-	status   string
-	state    string
-	leaseID  string
-	expires  time.Time
-	report   Report
-	result   []byte
+	seed    Seed
+	queued  bool
+	stopped bool
+	paused  bool
+	lease   string
+	expires time.Time
+	attempt int
+	arrival int
+	code    string
+	done    finished
 }
 
-// Memory is an in-memory Muster. It hands out leases in priority order,
-// expires leases that are not kept alive, commits completed changes to the
-// hub repository and remembers results so a repeated call is acknowledged
-// again. It can also be told to misbehave, to exercise the failure rows of
-// the specification.
+// Memory is an in-memory Muster, as far as Chartroom can see one. It
+// offers the steps waiting for Chartroom one at a time, urgent lane first;
+// keeps a lease until the step ends or someone else takes it over after it
+// ran out; checks a completion against Chartroom's rows; keeps the result;
+// and gives the same answer when the call that ended a lease is repeated.
+//
+// Where the real Muster would keep Chartroom's result for the catalog, the
+// stand-in commits it to the hub repository stand-in, so a test or a
+// stand-alone run can read the catalog that comes out.
+//
+// It can also be told to misbehave, to exercise the failure rows of the
+// specification.
 type Memory struct {
-	mu      sync.Mutex
-	hub     plainforge.Hub
-	now     func() time.Time
-	ttl     time.Duration
-	items   []*memItem
-	byLease map[string]*memItem
-	leases  int
-	settled []string
-	calls   []string
+	mu       sync.Mutex
+	hub      plainforge.Hub
+	now      func() time.Time
+	ttl      time.Duration
+	items    []*memItem
+	arrivals int
+	settled  []string
+	calls    []string
 
 	down     bool
 	stall    int
@@ -74,17 +108,24 @@ type Memory struct {
 }
 
 // NewMemory returns a stand-in that commits to hub, reads the time from
-// now and lets a lease lapse after ttl without a heartbeat.
+// now and lets a lease run out after ttl without a heartbeat.
 func NewMemory(hub plainforge.Hub, now func() time.Time, ttl time.Duration) *Memory {
-	return &Memory{hub: hub, now: now, ttl: ttl, byLease: make(map[string]*memItem)}
+	return &Memory{hub: hub, now: now, ttl: ttl}
 }
 
-// Seed adds an item waiting to be leased. payload is the item exactly as
-// it will be handed out; it does not have to be valid.
-func (m *Memory) Seed(id, priority string, payload []byte) {
+// Seed puts an item on record with a step waiting for Chartroom. The
+// stand-in does not check the item: a real Muster never offers Chartroom a
+// state it has no row for, and the worker must cope if one ever does.
+func (m *Memory) Seed(s Seed) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.items = append(m.items, &memItem{id: id, priority: priority, payload: append([]byte{}, payload...), status: StatusPending})
+	m.arrivals++
+	results := make(map[string]json.RawMessage, len(s.Results))
+	for k, v := range s.Results {
+		results[k] = append(json.RawMessage(nil), v...)
+	}
+	s.Results = results
+	m.items = append(m.items, &memItem{seed: s, queued: true, arrival: m.arrivals})
 }
 
 // SetDown makes every call fail as unavailable until it is cleared.
@@ -95,7 +136,7 @@ func (m *Memory) SetDown(down bool) {
 }
 
 // StallResults makes the next n result calls fail without being recorded,
-// as if the catalog sync behind Muster had timed out.
+// as if the record store behind Muster had been too slow.
 func (m *Memory) StallResults(n int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -117,148 +158,149 @@ func (m *Memory) Calls() []string {
 	return append([]string{}, m.calls...)
 }
 
-// Outcomes returns every item: settled ones first, in the order they were
-// settled, then the rest in the order they were seeded.
+// Result returns the result kept for a worker on an item, or nil.
+func (m *Memory) Result(id, worker string) json.RawMessage {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, it := range m.items {
+		if it.seed.ID == id {
+			return append(json.RawMessage(nil), it.seed.Results[worker]...)
+		}
+	}
+	return nil
+}
+
+// Outcomes returns every item: those whose step has ended first, in the
+// order the steps ended, then the rest in the order they were seeded.
 func (m *Memory) Outcomes() []Outcome {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.expire()
 	var out []Outcome
-	done := make(map[string]bool)
+	seen := make(map[*memItem]bool)
 	add := func(it *memItem) {
+		if seen[it] {
+			return
+		}
+		seen[it] = true
+		status := StatusCompleted
+		switch {
+		case it.paused:
+			status = StatusPaused
+		case it.stopped:
+			status = StatusStopped
+		case it.queued && it.lease != "":
+			status = StatusLeased
+		case it.queued:
+			status = StatusWaiting
+		}
 		out = append(out, Outcome{
-			ItemID: it.id, Priority: it.priority, Status: it.status, State: it.state,
-			Code: it.report.Code, Reason: it.report.Reason, Field: it.report.Field,
+			ID: it.seed.ID, Lane: it.seed.Lane, State: it.seed.State,
+			Status: status, Attempt: it.attempt, Code: it.code,
 		})
 	}
 	for _, id := range m.settled {
 		for _, it := range m.items {
-			if it.id == id && !done[id] {
-				done[id] = true
+			if it.seed.ID == id {
 				add(it)
 			}
 		}
 	}
 	for _, it := range m.items {
-		if !done[it.id] {
-			add(it)
-		}
+		add(it)
 	}
 	return out
 }
 
-// expire returns lapsed leases to the queue. The caller holds the lock.
-func (m *Memory) expire() {
-	now := m.now()
-	for _, it := range m.items {
-		if it.status == StatusLeased && !now.Before(it.expires) {
-			it.status = StatusPending
-			it.leaseID = ""
-		}
-	}
-}
-
-// Lease hands out up to max pending items, urgent first, then normal, then
-// backfill, each group in the order it was seeded.
-func (m *Memory) Lease(_ context.Context, max int) ([]Lease, error) {
+// Lease offers the next step: the urgent lane first, then normal, then
+// backfill, and within a lane the step that arrived first. A step whose
+// lease ran out is offered again.
+func (m *Memory) Lease(context.Context) (*Grant, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls = append(m.calls, "lease")
 	if m.down {
 		return nil, ErrUnavailable
 	}
-	m.expire()
-	var pending []*memItem
+	now := m.now()
+	var open []*memItem
 	for _, it := range m.items {
-		if it.status == StatusPending {
-			pending = append(pending, it)
+		if it.queued && !it.stopped && (it.lease == "" || !now.Before(it.expires)) {
+			open = append(open, it)
 		}
 	}
-	sort.SliceStable(pending, func(i, j int) bool {
-		return PriorityRank(pending[i].priority) < PriorityRank(pending[j].priority)
+	if len(open) == 0 {
+		return nil, nil
+	}
+	sort.SliceStable(open, func(i, j int) bool {
+		ri, rj := LaneRank(open[i].seed.Lane), LaneRank(open[j].seed.Lane)
+		if ri != rj {
+			return ri < rj
+		}
+		return open[i].arrival < open[j].arrival
 	})
-	if len(pending) > max {
-		pending = pending[:max]
+	it := open[0]
+	it.attempt++
+	// A lease names the step, its place in the order of arrival and the
+	// attempt, as Muster's do. A worker hands it back as it was given.
+	it.lease = it.seed.ID + "." + strconv.Itoa(it.arrival) + "." + strconv.Itoa(it.attempt)
+	it.expires = now.Add(m.ttl)
+	g := &Grant{
+		Lease:   it.lease,
+		Kind:    KindItem,
+		ID:      it.seed.ID,
+		State:   it.seed.State,
+		Lane:    it.seed.Lane,
+		Attempt: it.attempt,
+		Expires: it.expires.UTC().Format(time.RFC3339),
+		Found:   append(json.RawMessage(nil), it.seed.Found...),
 	}
-	out := make([]Lease, 0, len(pending))
-	for _, it := range pending {
-		m.leases++
-		it.status = StatusLeased
-		it.leaseID = fmt.Sprintf("lease-%04d", m.leases)
-		it.expires = m.now().Add(m.ttl)
-		m.byLease[it.leaseID] = it
-		out = append(out, Lease{
-			LeaseID:  it.leaseID,
-			Priority: it.priority,
-			Item:     append([]byte{}, it.payload...),
-			Catalog:  m.context(it.payload),
-		})
+	if len(it.seed.Results) > 0 {
+		g.Results = make(map[string]json.RawMessage, len(it.seed.Results))
+		for k, v := range it.seed.Results {
+			g.Results[k] = append(json.RawMessage(nil), v...)
+		}
 	}
-	return out, nil
+	return g, nil
 }
 
-// context returns the part of the hub catalog an item can touch. If the
-// hub catalog cannot be read as a catalog it is passed on as it is, so the
-// worker reports it.
-func (m *Memory) context(payload []byte) []byte {
-	raw, err := m.hub.ReadFile(context.Background(), CatalogPath)
-	if err != nil {
-		return catalog.Empty().Encode()
-	}
-	cat, err := catalog.Parse(raw, catalog.MaxBytes)
-	if err != nil {
-		return raw
-	}
-	var probe struct {
-		Slug  string `json:"slug"`
-		Merge *struct {
-			Parent string `json:"parent"`
-		} `json:"merge"`
-	}
-	_ = json.Unmarshal(payload, &probe)
-	parent := ""
-	if probe.Merge != nil {
-		parent = probe.Merge.Parent
-	}
-	return cat.Subset(probe.Slug, parent).Encode()
-}
-
-// held returns the item a live lease belongs to. The caller holds the lock.
-func (m *Memory) held(leaseID string) *memItem {
-	m.expire()
-	it := m.byLease[leaseID]
-	if it == nil || it.status != StatusLeased || it.leaseID != leaseID {
+// held returns the item a lease is held on. A lease that ran out still
+// counts until someone else takes the step, so a result that arrives late
+// is kept. The caller holds the lock.
+func (m *Memory) held(lease string) *memItem {
+	if lease == "" {
 		return nil
 	}
-	return it
+	for _, it := range m.items {
+		if it.queued && it.lease == lease {
+			return it
+		}
+	}
+	return nil
 }
 
-// Heartbeat pushes a lease's expiry out by one ttl.
-func (m *Memory) Heartbeat(_ context.Context, leaseID string) error {
+// Heartbeat moves the end of a lease to one lease length from now.
+func (m *Memory) Heartbeat(_ context.Context, lease string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls = append(m.calls, "heartbeat")
 	if m.down {
 		return ErrUnavailable
 	}
-	it := m.held(leaseID)
+	it := m.held(lease)
 	if it == nil {
-		return ErrLeaseGone
+		return ErrLeaseNotHeld
 	}
 	it.expires = m.now().Add(m.ttl)
 	return nil
 }
 
-// settle runs one result call with the stand-in's fault switches around it.
-func (m *Memory) settle(name, leaseID string, payload []byte, apply func(it *memItem) bool) error {
+// end runs one call that ends a lease, with the stand-in's fault switches
+// around it. Repeating the call that ended a lease gives the same answer
+// and does nothing twice.
+func (m *Memory) end(call, lease, arg string, apply func(it *memItem) error) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	// White space is not part of a result: compare results compacted.
-	var compact bytes.Buffer
-	if json.Compact(&compact, payload) == nil {
-		payload = compact.Bytes()
-	}
-	m.calls = append(m.calls, name)
+	m.calls = append(m.calls, call)
 	if m.down {
 		return ErrUnavailable
 	}
@@ -266,24 +308,20 @@ func (m *Memory) settle(name, leaseID string, payload []byte, apply func(it *mem
 		m.stall--
 		return ErrUnavailable
 	}
-	if prev := m.byLease[leaseID]; prev != nil && prev.leaseID == leaseID && prev.result != nil {
-		// A result for this lease is already recorded. The same result
-		// again is acknowledged again; a different one is refused.
-		if prev.status != StatusRejected && bytes.Equal(prev.result, payload) {
-			return nil
-		}
-		return ErrLeaseGone
-	}
-	it := m.held(leaseID)
+	it := m.held(lease)
 	if it == nil {
-		return ErrLeaseGone
+		for _, done := range m.items {
+			if lease != "" && done.done == (finished{lease, call, arg}) {
+				return nil
+			}
+		}
+		return ErrLeaseNotHeld
 	}
-	it.result = append([]byte{}, payload...)
-	m.settled = append(m.settled, it.id)
-	if !apply(it) {
-		it.status = StatusRejected
-		return ErrLeaseGone
+	if err := apply(it); err != nil {
+		return err
 	}
+	it.done = finished{lease, call, arg}
+	m.settled = append(m.settled, it.seed.ID)
 	if m.dropAcks > 0 {
 		m.dropAcks--
 		return ErrUnavailable
@@ -291,61 +329,79 @@ func (m *Memory) settle(name, leaseID string, payload []byte, apply func(it *mem
 	return nil
 }
 
-// Complete checks the change against the specification's state table and
-// against the hub catalog, commits it and records the new state.
-func (m *Memory) Complete(ctx context.Context, leaseID string, change json.RawMessage) error {
-	return m.settle("complete", leaseID, change, func(it *memItem) bool {
-		var ch decision.Change
-		if err := strictjson.Decode(change, catalog.MaxBytes, &ch); err != nil {
-			return false
+// Complete checks the move against Chartroom's rows, records the new state
+// and keeps the result. result must be a JSON object or empty.
+func (m *Memory) Complete(ctx context.Context, lease, state string, result json.RawMessage) error {
+	result = bytes.TrimSpace(result)
+	if string(result) == "null" {
+		result = nil
+	}
+	if len(result) > 0 && (result[0] != '{' || !json.Valid(result)) {
+		m.note("complete")
+		return ErrRefused
+	}
+	return m.end("complete", lease, state, func(it *memItem) error {
+		if to, ok := rows[it.seed.State]; !ok || to != state {
+			return ErrMoveNotAllowed
 		}
-		tr, ok := decision.Transitions[ch.Action]
-		if !ok || ch.ContractVersion != catalog.ContractVersion || ch.From != tr.From || ch.To != tr.To ||
-			ch.After == nil || ch.After.Slug != ch.Slug || ch.After.Status != ch.To {
-			return false
+		it.seed.State = state
+		it.queued, it.lease = false, ""
+		if len(result) > 0 {
+			it.seed.Results[Worker] = append(json.RawMessage(nil), result...)
+			m.publish(ctx, result)
 		}
-		cat := catalog.Empty()
-		if raw, err := m.hub.ReadFile(ctx, CatalogPath); err == nil {
-			if cat, err = catalog.Parse(raw, catalog.MaxBytes); err != nil {
-				return false
-			}
-		}
-		current := cat.Find(ch.Slug)
-		if ch.Changed {
-			if !catalog.Equal(current, ch.Before) {
-				return false
-			}
-			cat.Upsert(ch.After)
-			message := "catalog: " + ch.Action + " " + ch.Slug
-			if err := m.hub.WriteFile(ctx, CatalogPath, cat.Encode(), message); err != nil {
-				return false
-			}
-		} else if !catalog.Equal(current, ch.After) {
-			return false
-		}
-		it.status = StatusCompleted
-		it.state = ch.To
-		return true
+		return nil
 	})
 }
 
-// Fail records that an item's data was broken.
-func (m *Memory) Fail(_ context.Context, leaseID string, r Report) error {
-	return m.report("fail", StatusFailed, leaseID, r)
-}
-
-// NeedsSubtool pauses an item in needs_subtool.
-func (m *Memory) NeedsSubtool(_ context.Context, leaseID string, r Report) error {
-	return m.report("needs_subtool", StatusNeedsSubtool, leaseID, r)
-}
-
-func (m *Memory) report(name, status, leaseID string, r Report) error {
-	return m.settle(name, leaseID, strictjson.Marshal(r), func(it *memItem) bool {
-		it.status = status
-		it.report = r
-		if status == StatusNeedsSubtool {
-			it.state = StatusNeedsSubtool
+// publish commits Chartroom's result to the catalog in the hub repository,
+// if it is a catalog entry. The caller holds the lock.
+func (m *Memory) publish(ctx context.Context, result json.RawMessage) {
+	entry, err := catalog.ParseEntry(result)
+	if err != nil {
+		return
+	}
+	cat := catalog.Empty()
+	if raw, err := m.hub.ReadFile(ctx, CatalogPath); err == nil {
+		if cat, err = catalog.Parse(raw, catalog.MaxBytes); err != nil {
+			return
 		}
-		return true
+	}
+	cat.Upsert(entry)
+	_ = m.hub.WriteFile(ctx, CatalogPath, cat.Encode(), "catalog: "+entry.Status+" "+entry.Slug)
+}
+
+func (m *Memory) note(call string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, call)
+}
+
+// Fail records E_TIMEOUT or E_PARSE for a step. E_TIMEOUT leaves the step
+// in the queue, in its place. E_PARSE stops work on the item until the
+// owner releases it. Any other code is refused.
+func (m *Memory) Fail(_ context.Context, lease, code string) error {
+	if code != "E_TIMEOUT" && code != "E_PARSE" {
+		m.note("fail")
+		return ErrRefused
+	}
+	return m.end("fail", lease, code, func(it *memItem) error {
+		it.lease, it.code = "", code
+		if code == "E_PARSE" {
+			it.stopped = true
+		}
+		return nil
+	})
+}
+
+// NeedsSubtool pauses an item, where Muster's state table allows it.
+func (m *Memory) NeedsSubtool(_ context.Context, lease string) error {
+	return m.end("needs_subtool", lease, "", func(it *memItem) error {
+		if !pausable[it.seed.State] {
+			return ErrMoveNotAllowed
+		}
+		it.seed.State = "needs_subtool"
+		it.queued, it.paused, it.lease, it.code = false, true, "", "E_NEEDS_SUBTOOL"
+		return nil
 	})
 }

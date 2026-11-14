@@ -66,3 +66,21 @@ func TestMarshalIsCanonical(t *testing.T) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
+
+func TestTopLevel(t *testing.T) {
+	top, err := TopLevel([]byte(`{"a":{"x":1,"x":2},"B c":[1,2],"d":null}`), 1<<10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(top) != 3 || string(top["a"]) != `{"x":1,"x":2}` || string(top["B c"]) != `[1,2]` || string(top["d"]) != `null` {
+		t.Errorf("TopLevel gave %v", top)
+	}
+	for _, in := range []string{``, `"text"`, `[1]`, `null`, `{"a":1,"a":2}`, `{"a":1} 2`, "{\"a\":\"\xff\"}", `{"a":`} {
+		if _, err := TopLevel([]byte(in), 1<<10); err != ErrMalformed {
+			t.Errorf("TopLevel(%q) = %v, want %v", in, err, ErrMalformed)
+		}
+	}
+	if _, err := TopLevel([]byte(`{"a":1}`), 3); err != ErrMalformed {
+		t.Errorf("over the limit: %v", err)
+	}
+}

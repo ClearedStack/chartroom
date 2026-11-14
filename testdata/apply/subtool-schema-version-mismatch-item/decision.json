@@ -1,6 +1,6 @@
 {
-  "contract_version": "v2",
-  "item_id": "itm-0101",
+  "contract": "v2",
+  "id": "PA-0101",
   "state": "building",
   "action": "publish",
   "slug": "sample-clause-finder",

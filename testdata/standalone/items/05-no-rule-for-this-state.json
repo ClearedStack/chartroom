@@ -1,0 +1,16 @@
+{
+  "id": "PA-0105",
+  "state": "scored",
+  "lane": "normal",
+  "results": {
+    "trawl": {
+      "source": "made-up source"
+    },
+    "sextant": {
+      "job": "made-up job"
+    },
+    "assay": {
+      "score": 71
+    }
+  }
+}

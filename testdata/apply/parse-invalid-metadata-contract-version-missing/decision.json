@@ -1,5 +1,5 @@
 {
-  "item_id": "itm-0101",
+  "id": "PA-0101",
   "state": "building",
   "action": "publish",
   "slug": "sample-clause-finder",

@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -156,13 +155,13 @@ func TestVersionAndContractVersion(t *testing.T) {
 		t.Errorf("CONTRACT_VERSION=v1: exit %d", code)
 	}
 	_, stderr, code := chartroom(env("v2"), "version")
-	if code != exitNeedsSubtool || stderr != "E_NEEDS_SUBTOOL schema_version_mismatch contract_version: the schema version is not supported\n" {
+	if code != exitNeedsSubtool || stderr != "E_NEEDS_SUBTOOL schema_version_mismatch contract: the schema version is not supported\n" {
 		t.Errorf("CONTRACT_VERSION=v2: exit %d, stderr %q", code, stderr)
 	}
 }
 
 // TestStandalone runs the whole worker with no other component and checks
-// the report against the saved one: results in priority order, and the
+// the report against the saved one: steps ended in lane order, and the
 // catalog that comes out.
 func TestStandalone(t *testing.T) {
 	dir := filepath.Join(fixture.Root, "standalone")
@@ -186,18 +185,55 @@ func TestStandalone(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
 		t.Fatal(err)
 	}
+	// Steps end in the order Muster offers them: urgent, normal, backfill.
+	// The item with no rule cannot be paused under Muster's contract, so
+	// its step never ends and it is listed last, still leased.
 	var order []string
 	for _, it := range report.Items {
-		order = append(order, it.Priority)
+		order = append(order, it.Lane+":"+it.Status)
 	}
-	if got := strings.Join(order, " "); got != "urgent urgent normal normal normal backfill" {
-		t.Errorf("results arrived in order %q", got)
+	want := "urgent:completed urgent:stopped normal:completed normal:completed backfill:completed normal:leased"
+	if got := strings.Join(order, " "); got != want {
+		t.Errorf("items ended as\n  %s\nwant\n  %s", got, want)
 	}
 }
 
 // --- the built binary ---
 
-var binary string
+var (
+	binary  string
+	measure string
+)
+
+// measureSrc is a tiny static launcher so Linux's exec_mmap does not carry
+// the parent -race test binary's ThreadSanitizer RSS into the child's
+// ru_maxrss high-water mark.
+const measureSrc = `package main
+
+import (
+	"os"
+	"os/exec"
+	"strconv"
+	"syscall"
+)
+
+func main() {
+	outPath := os.Args[1]
+	cmd := exec.Command(os.Args[2], os.Args[3:]...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	err := cmd.Run()
+	if usage, ok := cmd.ProcessState.SysUsage().(*syscall.Rusage); ok {
+		_ = os.WriteFile(outPath, []byte(strconv.FormatInt(int64(usage.Maxrss), 10)), 0o600)
+	}
+	if err != nil {
+		if exit, ok := err.(*exec.ExitError); ok {
+			os.Exit(exit.ExitCode())
+		}
+		os.Exit(1)
+	}
+}
+`
 
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "chartroom-test-")
@@ -206,10 +242,22 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	binary = filepath.Join(dir, "chartroom")
-	build := exec.Command("go", "build", "-trimpath", "-o", binary, ".")
+	build := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w", "-o", binary, ".")
 	build.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := build.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "building the command: %v\n%s", err, out)
+		os.Exit(1)
+	}
+	measureGo := filepath.Join(dir, "measure.go")
+	if err := os.WriteFile(measureGo, []byte(measureSrc), 0o600); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	measure = filepath.Join(dir, "measure")
+	buildMeasure := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w", "-o", measure, measureGo)
+	buildMeasure.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if out, err := buildMeasure.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "building the rss launcher: %v\n%s", err, out)
 		os.Exit(1)
 	}
 	code := m.Run()
@@ -217,8 +265,13 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// bigItem is a valid publish item close to the largest the contract allows.
-func bigItem(n int) []byte {
+// bigItem is an item waiting to be published whose entry is close to the
+// largest the contract allows.
+func bigItem(n int) muster.Seed {
+	raw := func(v any) json.RawMessage {
+		data, _ := json.Marshal(v)
+		return data
+	}
 	links := make([]string, catalog.MaxProvLinks)
 	for i := range links {
 		links[i] = "https://rules.example/" + strings.Repeat("a", catalog.MaxURLBytes-40) + fmt.Sprint(i)
@@ -228,19 +281,24 @@ func bigItem(n int) []byte {
 		conds[i] = map[string]any{"name": fmt.Sprintf("made-up-condition-%d", i), "passed": true}
 	}
 	slug := fmt.Sprintf("sample-tool-%04d", n)
-	data, _ := json.Marshal(map[string]any{
-		"contract_version": "v1", "item_id": fmt.Sprintf("itm-%04d", n), "state": "building", "action": "publish", "slug": slug,
-		"entry":       map[string]any{"title": strings.Repeat("T", catalog.MaxTitleRunes), "summary": strings.Repeat("s", catalog.MaxSummaryRunes)},
-		"publish":     map[string]any{"repository": "https://forge.example/tools/" + slug},
-		"provenance":  map[string]any{"note": strings.Repeat("n", catalog.MaxProvNoteBytes), "links": links},
-		"attestation": map[string]any{"conditions": conds},
-	})
-	return data
+	return muster.Seed{
+		ID: fmt.Sprintf("PA-%04d", n+1), State: "building", Lane: []string{"normal", "urgent", "backfill"}[n%3],
+		Results: map[string]json.RawMessage{
+			"waybill": raw(map[string]any{
+				"specification": strings.Repeat("made-up specification ", 400),
+				"slug":          slug,
+				"entry":         map[string]any{"title": strings.Repeat("T", catalog.MaxTitleRunes), "summary": strings.Repeat("s", catalog.MaxSummaryRunes)},
+				"provenance":    map[string]any{"note": strings.Repeat("n", catalog.MaxProvNoteBytes), "links": links},
+			}),
+			"moldloft":  raw(map[string]any{"publish": map[string]any{"repository": "https://forge.example/tools/" + slug}}),
+			"shakedown": raw(map[string]any{"attestation": map[string]any{"conditions": conds}}),
+		},
+	}
 }
 
 // TestBinaryStaysInsideItsBudget runs the real binary as the cluster does,
-// against the Muster stand-in over HTTP, with over a hundred items of the
-// largest size the contract allows. It checks three of the specification's
+// against the Muster stand-in over HTTP, with over a hundred items whose
+// entries are the largest the contract allows. It checks three of the specification's
 // limits: peak memory under 30 MiB, no file written outside the spool
 // directory, and nothing but the three error codes in what it logs.
 func TestBinaryStaysInsideItsBudget(t *testing.T) {
@@ -252,11 +310,12 @@ func TestBinaryStaysInsideItsBudget(t *testing.T) {
 	}
 	const items = 120
 	hub := plainforge.NewMemory()
-	m := muster.NewMemory(hub, time.Now, time.Minute)
+	m := muster.NewMemory(hub, time.Now, muster.LeaseLength)
 	for i := 0; i < items; i++ {
-		m.Seed(fmt.Sprintf("itm-%04d", i), []string{"normal", "urgent", "backfill"}[i%3], bigItem(i))
+		m.Seed(bigItem(i))
 	}
-	m.Seed("broken", "normal", []byte(`{"contract_version": "v1", "action": "feature"}`))
+	m.Seed(muster.Seed{ID: "PA-9000", State: "building", Lane: "normal"}) // nothing to publish from: E_PARSE
+	m.Seed(muster.Seed{ID: "PA-9001", State: "scored", Lane: "normal"})   // no rule: needs_subtool
 	srv := httptest.NewServer(muster.Handler(m, "made-up-token"))
 	defer srv.Close()
 
@@ -271,8 +330,9 @@ func TestBinaryStaysInsideItsBudget(t *testing.T) {
 	if err := os.WriteFile(tokenPath, []byte("made-up-token"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	rssPath := filepath.Join(root, "maxrss")
 
-	cmd := exec.Command(binary, "run", "-once", "-muster-url", srv.URL, "-token-file", tokenPath, "-spool", spoolDir)
+	cmd := exec.Command(measure, rssPath, binary, "run", "-once", "-muster-url", srv.URL, "-token-file", tokenPath, "-spool", spoolDir)
 	cmd.Dir = cwd
 	cmd.Env = []string{"TMPDIR=" + tmp, "HOME=" + tmp, "CONTRACT_VERSION=v1"}
 	var logs bytes.Buffer
@@ -293,11 +353,14 @@ func TestBinaryStaysInsideItsBudget(t *testing.T) {
 	final, _ := hub.ReadFile(ctx(), muster.CatalogPath)
 	t.Logf("published %d entries, catalog is %d KiB", items, len(final)>>10)
 
-	usage, ok := cmd.ProcessState.SysUsage().(*syscall.Rusage)
-	if !ok {
-		t.Fatal("no resource usage for the worker process")
+	rssRaw, err := os.ReadFile(rssPath)
+	if err != nil {
+		t.Fatalf("no resource usage for the worker process: %v", err)
 	}
-	peakKiB := int64(usage.Maxrss)
+	var peakKiB int64
+	if _, err := fmt.Sscanf(string(rssRaw), "%d", &peakKiB); err != nil || peakKiB <= 0 {
+		t.Fatalf("unreadable maxrss %q: %v", rssRaw, err)
+	}
 	t.Logf("peak memory %.1f MiB", float64(peakKiB)/1024)
 	if peakKiB > 30*1024 {
 		t.Errorf("peak memory %.1f MiB is over the 30 MiB budget", float64(peakKiB)/1024)
