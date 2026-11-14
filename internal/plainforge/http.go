@@ -24,14 +24,17 @@ const (
 
 // HTTP is a Git smart HTTP client for the hub repository in Plainforge.
 //
-// It caches only the current tip commit of refs/heads/main, the directory
-// trees reachable from that commit, and the file blob Chartroom asked for,
+// It caches only one tip commit (main's for a read, the catalog branch's or
+// main's for a write), the directory trees reachable from that commit, and
+// the file blob Chartroom asked for,
 // so steady-state reads and writes never pull repository history again and
 // memory stays bounded across arbitrarily many commits.
 type HTTP struct {
 	repoURL string
 	client  *http.Client
 	now     func() time.Time
+
+	user, token string // optional Basic auth, see SetBasicAuth
 
 	mu      sync.Mutex
 	tip     oid
@@ -94,11 +97,11 @@ func (h *HTTP) ReadFile(ctx context.Context, path string) ([]byte, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	remoteTip, caps, err := h.discover(ctx, serviceUpload)
+	refs, caps, err := h.discover(ctx, serviceUpload)
 	if err != nil {
 		return nil, err
 	}
-	if err := h.syncTip(ctx, remoteTip, caps["multi_ack_detailed"], parts); err != nil {
+	if err := h.syncTip(ctx, refs[MainRef], caps["multi_ack_detailed"], parts); err != nil {
 		return nil, err
 	}
 	if h.tip.isZero() {
@@ -121,11 +124,18 @@ func (h *HTTP) ReadFile(ctx context.Context, path string) ([]byte, error) {
 	return append([]byte{}, blob.data...), nil
 }
 
-// WriteFile commits data at path on refs/heads/main in the hub repository,
-// preserving every other file and directory in the tree. If refs/heads/main
-// already holds the exact bytes at path, WriteFile succeeds without making
-// an empty commit.
-func (h *HTTP) WriteFile(ctx context.Context, path string, data []byte, message string) error {
+// WriteFile commits data at path on the branch refs/heads/catalog/<slug> of
+// the hub repository, preserving every other file and directory in the tree.
+// It never writes refs/heads/main. The commit's parent is the tip of the
+// slug's branch when that exists (a fast-forward update) and the tip of main
+// otherwise (a new branch). If the parent already holds the exact bytes at
+// path, WriteFile succeeds without making an empty commit. A slug that does
+// not satisfy ValidSlug is refused before any request is sent.
+func (h *HTTP) WriteFile(ctx context.Context, slug, path string, data []byte, message string) error {
+	if !ValidSlug(slug) {
+		return ErrRefused
+	}
+	branch := BranchPrefix + slug
 	parts, err := cleanRelPath(path)
 	if err != nil {
 		return err
@@ -136,19 +146,30 @@ func (h *HTTP) WriteFile(ctx context.Context, path string, data []byte, message 
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	remoteTip, recvCaps, err := h.discover(ctx, serviceReceive)
+	refs, recvCaps, err := h.discover(ctx, serviceReceive)
 	if err != nil {
 		return err
 	}
 	if !recvCaps["report-status"] {
 		return ErrRefused
 	}
+	// oldTip is what the push expects the branch to hold (zero: it must not
+	// exist); remoteTip is the commit the new one is built on.
+	oldTip := refs[branch]
+	remoteTip := oldTip
+	if remoteTip.isZero() {
+		remoteTip = refs[MainRef]
+	}
 	if !remoteTip.isZero() && (remoteTip != h.tip || h.objects == nil) {
-		upTip, upCaps, err := h.discover(ctx, serviceUpload)
+		upRefs, upCaps, err := h.discover(ctx, serviceUpload)
 		if err != nil {
 			return err
 		}
-		remoteTip = upTip
+		oldTip = upRefs[branch]
+		remoteTip = oldTip
+		if remoteTip.isZero() {
+			remoteTip = upRefs[MainRef]
+		}
 		if err := h.syncTip(ctx, remoteTip, upCaps["multi_ack_detailed"], parts); err != nil {
 			return err
 		}
@@ -218,11 +239,11 @@ func (h *HTTP) WriteFile(ctx context.Context, path string, data []byte, message 
 		return ErrCorrupt
 	}
 	var reqBody bytes.Buffer
-	writePktString(&reqBody, remoteTip.String()+" "+commitID.String()+" "+MainRef+"\x00report-status\n")
+	writePktString(&reqBody, oldTip.String()+" "+commitID.String()+" "+branch+"\x00report-status\n")
 	writePktFlush(&reqBody)
 	reqBody.Write(packBytes)
 
-	if err := h.push(ctx, reqBody.Bytes()); err != nil {
+	if err := h.push(ctx, branch, reqBody.Bytes()); err != nil {
 		return err
 	}
 	kept, err := retainTipState(commitID, staged, parts)
@@ -243,46 +264,48 @@ func classifyStatus(status int) error {
 	}
 }
 
-func (h *HTTP) discover(ctx context.Context, service string) (oid, map[string]bool, error) {
+// discover lists the refs the server advertises for service, and its capabilities.
+func (h *HTTP) discover(ctx context.Context, service string) (map[string]oid, map[string]bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.repoURL+"/info/refs?service="+service, nil)
 	if err != nil {
-		return zeroOID, nil, ErrUnavailable
+		return nil, nil, ErrUnavailable
 	}
+	h.authorize(req)
 	resp, err := h.client.Do(req)
 	if err != nil {
-		return zeroOID, nil, ErrUnavailable
+		return nil, nil, ErrUnavailable
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return zeroOID, nil, classifyStatus(resp.StatusCode)
+		return nil, nil, classifyStatus(resp.StatusCode)
 	}
 	ct := resp.Header.Get("Content-Type")
 	if !strings.HasPrefix(ct, "application/x-"+service+"-advertisement") {
-		return zeroOID, nil, ErrCorrupt
+		return nil, nil, ErrCorrupt
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxAdvBytes+1))
 	if err != nil {
-		return zeroOID, nil, ErrUnavailable
+		return nil, nil, ErrUnavailable
 	}
 	if len(data) > maxAdvBytes {
-		return zeroOID, nil, ErrCorrupt
+		return nil, nil, ErrCorrupt
 	}
 
 	r := bytes.NewReader(data)
 	banner, flush, err := readPktLine(r)
 	if err != nil || flush || strings.TrimSuffix(string(banner), "\n") != "# service="+service {
-		return zeroOID, nil, ErrCorrupt
+		return nil, nil, ErrCorrupt
 	}
 	if _, flush, err := readPktLine(r); err != nil || !flush {
-		return zeroOID, nil, ErrCorrupt
+		return nil, nil, ErrCorrupt
 	}
 
 	caps := make(map[string]bool)
-	var mainTip oid
+	refs := make(map[string]oid)
 	for first := true; ; first = false {
 		line, flush, err := readPktLine(r)
 		if err != nil {
-			return zeroOID, nil, ErrCorrupt
+			return nil, nil, ErrCorrupt
 		}
 		if flush {
 			break
@@ -297,17 +320,17 @@ func (h *HTTP) discover(ctx context.Context, service string) (oid, map[string]bo
 		}
 		hexID, refName, ok := strings.Cut(text, " ")
 		if !ok {
-			return zeroOID, nil, ErrCorrupt
+			return nil, nil, ErrCorrupt
 		}
 		id, err := parseOID(hexID)
 		if err != nil {
-			return zeroOID, nil, err
+			return nil, nil, err
 		}
-		if refName == MainRef {
-			mainTip = id
+		if strings.HasPrefix(refName, "refs/heads/") {
+			refs[refName] = id
 		}
 	}
-	return mainTip, caps, nil
+	return refs, caps, nil
 }
 
 func (h *HTTP) syncTip(ctx context.Context, remoteTip oid, multiAck bool, parts []string) error {
@@ -338,6 +361,7 @@ func (h *HTTP) syncTip(ctx context.Context, remoteTip oid, multiAck bool, parts 
 	}
 	req.Header.Set("Content-Type", "application/x-"+serviceUpload+"-request")
 	req.Header.Set("Accept", "application/x-"+serviceUpload+"-result")
+	h.authorize(req)
 
 	resp, err := h.client.Do(req)
 	if err != nil {
@@ -383,13 +407,18 @@ func (h *HTTP) syncTip(ctx context.Context, remoteTip oid, multiAck bool, parts 
 	return nil
 }
 
-func (h *HTTP) push(ctx context.Context, payload []byte) error {
+func (h *HTTP) push(ctx context.Context, ref string, payload []byte) error {
+	// Defence in depth: only a catalog branch is ever pushed, never main.
+	if !strings.HasPrefix(ref, BranchPrefix) || !ValidSlug(strings.TrimPrefix(ref, BranchPrefix)) {
+		return ErrRefused
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.repoURL+"/"+serviceReceive, bytes.NewReader(payload))
 	if err != nil {
 		return ErrUnavailable
 	}
 	req.Header.Set("Content-Type", "application/x-"+serviceReceive+"-request")
 	req.Header.Set("Accept", "application/x-"+serviceReceive+"-result")
+	h.authorize(req)
 
 	resp, err := h.client.Do(req)
 	if err != nil {
@@ -427,10 +456,10 @@ func (h *HTTP) push(ctx context.Context, payload []byte) error {
 			unpackOK = true
 		case strings.HasPrefix(text, "unpack "):
 			return ErrRefused
-		case text == "ok "+MainRef:
+		case text == "ok "+ref:
 			refOK = true
-		case strings.HasPrefix(text, "ng "+MainRef+" "):
-			reason := strings.ToLower(strings.TrimPrefix(text, "ng "+MainRef+" "))
+		case strings.HasPrefix(text, "ng "+ref+" "):
+			reason := strings.ToLower(strings.TrimPrefix(text, "ng "+ref+" "))
 			if strings.Contains(reason, "changed since") ||
 				strings.Contains(reason, "fast-forward") ||
 				strings.Contains(reason, "lock") ||
