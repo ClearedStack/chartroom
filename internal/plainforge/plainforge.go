@@ -13,6 +13,8 @@ import (
 	"context"
 	"errors"
 	"sync"
+
+	"github.com/ClearedStack/chartroom/internal/catalog"
 )
 
 const (
@@ -113,18 +115,7 @@ func (m *Memory) Commits() []Commit {
 	return append([]Commit{}, m.commits...)
 }
 
-// ValidSlug reports whether s matches ^[a-z0-9][a-z0-9-]{0,62}$: the only
-// slugs Chartroom turns into a branch name.
-func ValidSlug(s string) bool {
-	if s == "" || len(s) > 63 {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' && i > 0 {
-			continue
-		}
-		return false
-	}
-	return true
-}
+// ValidSlug reports whether s may name a catalog branch. It is the catalog's
+// own slug rule (catalog.ValidSlug), so a slug the catalog accepts is never
+// refused here and the worker cannot retry one forever.
+func ValidSlug(s string) bool { return catalog.ValidSlug(s) }
