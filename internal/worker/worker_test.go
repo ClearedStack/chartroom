@@ -711,6 +711,37 @@ func TestLogsCarryNothingFromTheData(t *testing.T) {
 	}
 }
 
+// TestWorkerHandlesLogbookPostRestartGrant checks the exact grant shape
+// Muster's PostgreSQL 17 store returns after a restart, when core.item has
+// issued a five-digit identifier (PA-10000+) and Found carries an empty
+// source alongside title and address.
+func TestWorkerHandlesLogbookPostRestartGrant(t *testing.T) {
+	base := grantOf(t, "complete-publish")
+	r := newRig(t)
+	r.muster.Seed(muster.Seed{
+		ID:      "PA-10000",
+		State:   "building",
+		Lane:    "normal",
+		Found:   json.RawMessage(`{"source":"","title":"Sample Clause Finder","address":"https://rules.example/part-900/section-12"}`),
+		Results: base.Results,
+	})
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenPath, []byte("made-up-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(muster.Handler(r.muster, "made-up-token"))
+	defer srv.Close()
+	client, err := muster.NewHTTP(srv.URL, tokenPath, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.run(context.Background(), client)
+	outcomes := r.muster.Outcomes()
+	if len(outcomes) != 1 || outcomes[0].ID != "PA-10000" || outcomes[0].Status != muster.StatusCompleted || outcomes[0].State != "live" {
+		t.Fatalf("outcomes = %+v\n%s", outcomes, r.log)
+	}
+}
+
 // TestPackageBoundaries reads the import lists of the packages that run in
 // the worker. None may reach Plainforge, and only the Muster client may
 // touch the network: Chartroom talks to Muster and to nothing else.

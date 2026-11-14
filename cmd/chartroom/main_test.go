@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -201,7 +200,40 @@ func TestStandalone(t *testing.T) {
 
 // --- the built binary ---
 
-var binary string
+var (
+	binary  string
+	measure string
+)
+
+// measureSrc is a tiny static launcher so Linux's exec_mmap does not carry
+// the parent -race test binary's ThreadSanitizer RSS into the child's
+// ru_maxrss high-water mark.
+const measureSrc = `package main
+
+import (
+	"os"
+	"os/exec"
+	"strconv"
+	"syscall"
+)
+
+func main() {
+	outPath := os.Args[1]
+	cmd := exec.Command(os.Args[2], os.Args[3:]...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	err := cmd.Run()
+	if usage, ok := cmd.ProcessState.SysUsage().(*syscall.Rusage); ok {
+		_ = os.WriteFile(outPath, []byte(strconv.FormatInt(int64(usage.Maxrss), 10)), 0o600)
+	}
+	if err != nil {
+		if exit, ok := err.(*exec.ExitError); ok {
+			os.Exit(exit.ExitCode())
+		}
+		os.Exit(1)
+	}
+}
+`
 
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "chartroom-test-")
@@ -210,10 +242,22 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	binary = filepath.Join(dir, "chartroom")
-	build := exec.Command("go", "build", "-trimpath", "-o", binary, ".")
+	build := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w", "-o", binary, ".")
 	build.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := build.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "building the command: %v\n%s", err, out)
+		os.Exit(1)
+	}
+	measureGo := filepath.Join(dir, "measure.go")
+	if err := os.WriteFile(measureGo, []byte(measureSrc), 0o600); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	measure = filepath.Join(dir, "measure")
+	buildMeasure := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w", "-o", measure, measureGo)
+	buildMeasure.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if out, err := buildMeasure.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "building the rss launcher: %v\n%s", err, out)
 		os.Exit(1)
 	}
 	code := m.Run()
@@ -286,8 +330,9 @@ func TestBinaryStaysInsideItsBudget(t *testing.T) {
 	if err := os.WriteFile(tokenPath, []byte("made-up-token"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	rssPath := filepath.Join(root, "maxrss")
 
-	cmd := exec.Command(binary, "run", "-once", "-muster-url", srv.URL, "-token-file", tokenPath, "-spool", spoolDir)
+	cmd := exec.Command(measure, rssPath, binary, "run", "-once", "-muster-url", srv.URL, "-token-file", tokenPath, "-spool", spoolDir)
 	cmd.Dir = cwd
 	cmd.Env = []string{"TMPDIR=" + tmp, "HOME=" + tmp, "CONTRACT_VERSION=v1"}
 	var logs bytes.Buffer
@@ -308,11 +353,14 @@ func TestBinaryStaysInsideItsBudget(t *testing.T) {
 	final, _ := hub.ReadFile(ctx(), muster.CatalogPath)
 	t.Logf("published %d entries, catalog is %d KiB", items, len(final)>>10)
 
-	usage, ok := cmd.ProcessState.SysUsage().(*syscall.Rusage)
-	if !ok {
-		t.Fatal("no resource usage for the worker process")
+	rssRaw, err := os.ReadFile(rssPath)
+	if err != nil {
+		t.Fatalf("no resource usage for the worker process: %v", err)
 	}
-	peakKiB := int64(usage.Maxrss)
+	var peakKiB int64
+	if _, err := fmt.Sscanf(string(rssRaw), "%d", &peakKiB); err != nil || peakKiB <= 0 {
+		t.Fatalf("unreadable maxrss %q: %v", rssRaw, err)
+	}
 	t.Logf("peak memory %.1f MiB", float64(peakKiB)/1024)
 	if peakKiB > 30*1024 {
 		t.Errorf("peak memory %.1f MiB is over the 30 MiB budget", float64(peakKiB)/1024)

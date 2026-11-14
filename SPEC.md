@@ -8,7 +8,7 @@ The same text is published at [clearedstack.com/platform/chartroom/](https://cle
 
 ## Overview & Role
 
-Chartroom is the catalog publication worker in the `cs-workers` namespace (`ownerRepo: Chartroom`, version `v0.1.0-draft`). Split out of the original Stage 9 (List) alongside Shakedown, its job is to publish verified, linked, merged, and retired entries—complete with provenance links—to the `clearedstack.com` catalog (`/tools`).
+Chartroom is the catalog publication worker in the `cs-workers` namespace (`ownerRepo: Chartroom`, version `v0.1.0-draft`). Split out of the original Stage 9 (List) alongside Shakedown, its job is to publish verified, linked, merged, and retired entries, complete with provenance links, to the `clearedstack.com` catalog (`/tools`).
 
 Chartroom is a 100% deterministic Go service with zero AI at runtime. It never builds code or runs verification checks itself; it only publishes outcomes that have already passed Shakedown or been determined in Countersign.
 
@@ -21,7 +21,7 @@ Chartroom is a 100% deterministic Go service with zero AI at runtime. It never b
 | **Kind** | `worker` (100% deterministic Go, zero runtime AI) |
 | **Version** | `v0.1.0-draft` |
 | **RAM Budget** | `30 MiB` |
-| **Sub-Tools** | None (`[]` — uniform catalog publication logic) |
+| **Sub-Tools** | None (`[]`: uniform catalog publication logic) |
 | **Local Spool** | `/var/spool/cs` (buffers publication acknowledgements if Muster restarts) |
 | **Contract Version** | `CONTRACT_VERSION=v1` (owned by `clearedstack.com`) |
 

@@ -40,12 +40,12 @@ Only the first changes the state. Countersign has already moved a linked or merg
 
 | Answer | Meaning | What Chartroom does |
 | --- | --- | --- |
-| `200`; `204` to a lease call | Acknowledged | Removes the result from the spool. |
+| `200` with the call's `CONTRACT.md` fields; `204` to a lease call | Acknowledged | Removes the result from the spool. |
 | `409` `lease_not_held` | The lease ended or the step was taken over | Drops the result. Muster offers the step again if it still needs doing. |
 | `409` `move_not_allowed` | Muster's tables do not allow it | Drops the result and logs it. |
 | `422` `unknown_contract` | Muster does not speak `v1` | Drops the result and logs `E_NEEDS_SUBTOOL`. |
 | Any other `4xx` refusal | The same call would be refused again | Drops the result and logs `E_PARSE`. |
-| `429`, `5xx`, a timeout, no connection, an answer that is not the contract's | Not acknowledged | Keeps the result staged and sends it again after 1 s, 2 s, 4 s and so on, up to 60 s. |
+| `429`, `5xx`, a timeout, no connection, an answer (including a malformed `200`) that is not the contract's | Not acknowledged | Keeps the result staged and sends it again after 1 s, 2 s, 4 s and so on, up to 60 s. |
 
 A refusal is trusted only if it has the contract's exact shape: `error`, `cause`, `reason` and nothing else. Chartroom acts on the status and the `cause`. It never logs or repeats the `reason`. A lease call that is refused for any reason is tried again after the same doubling wait.
 

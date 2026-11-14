@@ -186,6 +186,9 @@ func call(c *muster.HTTP, path string, body json.RawMessage) (grant *muster.Gran
 // call the example happened to use.
 func TestContractExamples(t *testing.T) {
 	examples := loadExamples(t)
+	if len(examples) != 52 {
+		t.Fatalf("loaded %d contract examples, want all 52 from contract/v1/examples", len(examples))
+	}
 	names := make([]string, 0, len(examples))
 	for name := range examples {
 		names = append(names, name)
@@ -194,6 +197,7 @@ func TestContractExamples(t *testing.T) {
 
 	replayed := map[string]int{}
 	causes := map[string]bool{}
+	checked := 0
 	for _, name := range names {
 		ex := examples[name]
 		path := ex.Request.Path
@@ -202,10 +206,39 @@ func TestContractExamples(t *testing.T) {
 			continue
 		}
 		refusal := ex.Expect.Status >= 400
-		if !workerCalls[path] && !refusal {
-			continue // a call that is not a worker's, answered normally
-		}
 		t.Run(name, func(t *testing.T) {
+			checked++
+			if !workerCalls[path] && !refusal {
+				// Non-worker calls (/v1/items, /v1/edits, /v1/feed, /v1/health,
+				// /v1/release, /healthz) must never be sendable by Chartroom's
+				// client, and if sent with a worker token to the stand-in (other
+				// than public GET /healthz) must be refused as not_your_call.
+				c := newClient(t, "http://127.0.0.1:1", time.Millisecond)
+				if _, _, sendable := call(c, path, ex.Request.Body); sendable {
+					t.Fatalf("non-worker call %s was accepted as sendable by Chartroom's client", path)
+				}
+				if path != "/healthz" {
+					m, _, _ := newMemory(t)
+					srv := httptest.NewServer(muster.Handler(m, token))
+					defer srv.Close()
+					req, err := http.NewRequest(ex.Request.Method, srv.URL+path, bytes.NewReader([]byte(compact(t, ex.Request.Body))))
+					if err != nil {
+						t.Fatal(err)
+					}
+					req.Header.Set("Content-Type", "application/json")
+					req.Header.Set("Authorization", "Bearer "+token)
+					resp, err := http.DefaultClient.Do(req)
+					if err != nil {
+						t.Fatal(err)
+					}
+					got := drainResponse(resp)
+					if resp.StatusCode != http.StatusForbidden || !strings.Contains(string(got), `"cause":"not_your_call"`) {
+						t.Errorf("worker calling %s got %d %s, want 403 not_your_call", path, resp.StatusCode, got)
+					}
+				}
+				return
+			}
+
 			var sent []byte
 			var sentType, sentAuth, sentPath, sentMethod string
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -278,6 +311,9 @@ func TestContractExamples(t *testing.T) {
 		})
 	}
 
+	if checked != len(examples) {
+		t.Errorf("checked %d of %d examples", checked, len(examples))
+	}
 	for path := range workerCalls {
 		if replayed[path] == 0 {
 			t.Errorf("no example of %s was replayed as a request", path)
@@ -303,9 +339,12 @@ func TestStandInAnswersLikeTheContract(t *testing.T) {
 	ran := 0
 	for name, ex := range loadExamples(t) {
 		path := ex.Request.Path
-		if ex.Given != nil || !(workerCalls[path] || path == "/v1/made-up") || !workers[ex.Request.As] {
+		if ex.Given != nil || !(workerCalls[path] || path == "/v1/made-up" || path == "/healthz") || !workers[ex.Request.As] {
 			continue
 		}
+		// Chartroom IS a worker, so refused-403-not_your_call (conn calling /v1/lease)
+		// is not Chartroom's caller identity; non-worker paths with Chartroom's token
+		// are checked in TestContractExamples above.
 		ran++
 		m, _, _ := newMemory(t)
 		srv := httptest.NewServer(muster.Handler(m, token))
@@ -318,10 +357,12 @@ func TestStandInAnswersLikeTheContract(t *testing.T) {
 			t.Fatal(err)
 		}
 		contentType := ex.Request.ContentType
-		if contentType == "" {
+		if contentType == "" && ex.Request.Method == http.MethodPost {
 			contentType = "application/json"
 		}
-		req.Header.Set("Content-Type", contentType)
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
 		if ex.Request.As != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
@@ -338,7 +379,7 @@ func TestStandInAnswersLikeTheContract(t *testing.T) {
 			t.Errorf("%s: body\n  got  %s\n  want %s", name, got, want)
 		}
 	}
-	if ran < 7 {
+	if ran < 9 {
 		t.Errorf("only %d examples could be sent to the stand-in; the examples have changed shape", ran)
 	}
 }

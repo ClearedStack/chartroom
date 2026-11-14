@@ -32,7 +32,7 @@ It uses the Go standard library and nothing else. There is no model and no call 
 You need Go 1.22 or later.
 
 ```sh
-go test ./...                 # every test, including the saved examples
+go test -race ./...           # every test, including the saved examples
 ```
 
 Apply one decision to a catalog file and print the change:
@@ -68,8 +68,8 @@ chartroom run -muster-url http://… [-token-file FILE] [-spool /var/spool/cs] [
 Build the image and print the manifests with `ko`:
 
 ```sh
-make image        # pushes to the in-cluster registry as …/chartroom
-make manifests    # deploy/chartroom.yaml with the image reference filled in
+make image        # pushes to the in-cluster registry as …/chartroom@sha256:…
+make manifests    # deploy/chartroom.yaml and deploy/networkpolicy.yaml with the digest filled in
 ```
 
 ## The saved examples
@@ -82,7 +82,7 @@ Every rule has a saved input and the exact output expected. A change in behaviou
 | [`testdata/lease/`](testdata/lease) | 32 lease answers in the shape of Muster's contract, and the exact record the worker stages for each. Every one that is an item is also run through the whole worker, in memory and over HTTP. |
 | [`testdata/worker/`](testdata/worker) | Two logs: a result retried after 1 s, 2 s and 4 s (`E_TIMEOUT`), with the staged file; and a pause that Muster refuses. |
 | [`testdata/standalone/`](testdata/standalone) | Six items in three lanes run through the whole loop, and the exact report. |
-| [`testdata/contract/`](testdata/contract) | Muster's own 50 saved examples of its contract, copied unchanged. Every worker call and every refusal among them is replayed against Chartroom's client, and those that need no setup against its stand-in. |
+| [`testdata/contract/`](testdata/contract) | Muster's own 52 saved examples of its contract, copied unchanged. Every worker call and every refusal among them is replayed against Chartroom's client, and those that need no setup against its stand-in. |
 
 A test checks that every error reason Chartroom can give appears in at least one saved output. `make golden` rewrites the expected outputs from the code; read the diff before committing it.
 
@@ -99,21 +99,19 @@ A test checks that every error reason Chartroom can give appears in at least one
 | `E_NEEDS_SUBTOOL`: fails closed | Unknown state, a step that is not an item, a block found twice, a retirement with nothing to retire. Nothing is published. See the second open question for what Muster then does. |
 | Provenance note preserved, no raw snapshots | The note is published byte for byte. Only named blocks are read from earlier results, each has a closed set of fields, and nothing else is copied. |
 | 30 MiB | A test runs the built binary under load and reads its peak memory. |
-| Non-root, no added privileges, read-only root filesystem | [`deploy/chartroom.yaml`](deploy/chartroom.yaml), pinned by a test. Another test checks the binary writes nowhere but the spool. |
+| Non-root, no added privileges, read-only root filesystem, default-deny network | [`deploy/chartroom.yaml`](deploy/chartroom.yaml) and [`deploy/networkpolicy.yaml`](deploy/networkpolicy.yaml), pinned by a test. Another test checks the binary writes nowhere but the spool. |
 | No error names a machine, an address or a credential | Errors are constants. Tests check the HTTP client, the logs and the command for leaks. |
 
 Both contracts Chartroom works to are in [`docs/contract.md`](docs/contract.md).
 
 ## Not yet done
 
-- **Never run against a real Muster.** The client follows Muster's contract v1 and its saved examples as of the commit named in [`testdata/contract/SOURCE.md`](testdata/contract/SOURCE.md). It has only ever talked to Chartroom's own stand-in.
-- **Never run in a cluster.** The manifest has not been applied anywhere. The image was built with `ko` to a local layout and not pushed.
-- **Where the entry's content comes from.** No specification says which earlier worker records the slug, the title, the repository, the provenance or the attestation, or in what shape. Chartroom reads named blocks from earlier results ([`docs/contract.md`](docs/contract.md)). Until the workers before it agree to write them, every real item will fail with `E_PARSE`.
+- **Never deployed to the cluster.** Chartroom speaks Muster's contract v1 at the commit named in [`testdata/contract/SOURCE.md`](testdata/contract/SOURCE.md), sets `MUSTER_URL` to `http://muster.clearedstack.svc.cluster.local:8080`, pins node affinity (`arm64`, excluding `cm3588-plus`), and enforces default-deny networking in `cs-workers` with egress only to Muster (`clearedstack` TCP `8080`) and cluster DNS (`kube-system` port `53`). Its placeholder `@sha256:0000...` image digest in [`deploy/chartroom.yaml`](deploy/chartroom.yaml) must be replaced with the Lazarette digest produced by `ko` / Keelworks at deploy time.
+- **Persistence of worker results across Muster restarts.** Muster's PostgreSQL 17 Logbook store currently keeps per-worker `results` (including `results.chartroom` and upstream worker blocks) in memory beside Logbook rather than in `core.*` tables, so a Muster restart loses `results` until Logbook and Muster persist them.
+- **Where the entry's content comes from.** No specification says which earlier worker records the slug, the title, the repository, the provenance or the attestation, or in what shape. Chartroom reads named blocks from earlier results ([`docs/contract.md`](docs/contract.md)). Until the workers before it (`Countersign`, `Waybill`, `Moldloft`, `Shakedown`, `Tidegauge`) write those blocks, real items will fail with `E_PARSE`.
 - **Priority class.** The specification says Chartroom runs under the Standard priority class and does not give the class's name. The manifest does not set one.
-- **Network policy.** The policy allows connections to Muster and to cluster DNS only. It finds Muster by the label `app.kubernetes.io/name: muster`, which is a guess.
-- **Muster's address.** The manifest reads it from a ConfigMap named `chartroom`, key `muster-url`, which nothing creates yet.
 - **The five Shakedown conditions.** The specification gives the number and not the names. Chartroom checks there are five, each different, all passed.
-- **Mirroring to GitHub.** Not built. It reads as another component's job.
+- **Writing to Plainforge and mirroring to GitHub.** Chartroom sends the catalog entry to Muster as `result` on `POST /v1/complete`; nothing yet carries `results.chartroom` from Muster into Plainforge's hub repository or mirrors public tool repositories to GitHub.
 - **The spool volume** is an `emptyDir`: it survives a container restart and not the deletion of the pod. Nothing is lost when that happens, because Muster offers the step again and the result is the same, but it is weaker than the specification's wording suggests.
 
 ## Where the specifications needed a decision

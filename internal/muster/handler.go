@@ -29,6 +29,7 @@ var (
 	badField       = &problem{http.StatusBadRequest, refusal{"E_PARSE", "bad_field", "a field does not have the form this call requires"}}
 	useNeeds       = &problem{http.StatusBadRequest, refusal{"E_PARSE", "bad_field", "report a missing rule with the needs_subtool call"}}
 	noCredential   = &problem{http.StatusUnauthorized, refusal{"E_PARSE", "no_credential", "no valid credential was presented"}}
+	notYourCall    = &problem{http.StatusForbidden, refusal{"E_PARSE", "not_your_call", "this caller may not make this call"}}
 	noSuchCall     = &problem{http.StatusNotFound, refusal{"E_PARSE", "no_such_call", "no such call"}}
 	wrongMethod    = &problem{http.StatusMethodNotAllowed, refusal{"E_PARSE", "wrong_method", "this call does not accept that method"}}
 	leaseNotHeld   = &problem{http.StatusConflict, refusal{"E_PARSE", "lease_not_held", "the lease is not held"}}
@@ -142,7 +143,39 @@ func Handler(m *Memory, token string) http.Handler {
 		},
 	}
 
+	otherCalls := map[string]string{
+		"/v1/items":   http.MethodPost,
+		"/v1/edits":   http.MethodPost,
+		"/v1/feed":    http.MethodGet,
+		"/v1/health":  http.MethodPost,
+		"/v1/release": http.MethodPost,
+	}
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			if r.Method != http.MethodGet {
+				w.Header().Set("Allow", http.MethodGet)
+				refuse(w, wrongMethod)
+				return
+			}
+			answer(w, http.StatusOK, struct {
+				Status string `json:"status"`
+			}{Status: "ok"})
+			return
+		}
+		if wantMethod, other := otherCalls[r.URL.Path]; other {
+			if r.Method != wantMethod {
+				w.Header().Set("Allow", wantMethod)
+				refuse(w, wrongMethod)
+				return
+			}
+			if r.Header.Get("Authorization") != "Bearer "+token {
+				refuse(w, noCredential)
+				return
+			}
+			refuse(w, notYourCall)
+			return
+		}
 		call, ok := calls[r.URL.Path]
 		switch {
 		case !ok:

@@ -151,9 +151,38 @@ func (h *HTTP) post(ctx context.Context, path string, in any) (int, []byte, erro
 	return resp.StatusCode, data, nil
 }
 
-// decodeExact decodes one JSON value into v and refuses a field v does not
-// define or anything after the value.
+// The 200 response bodies for the four calls that keep or end a lease.
+// Each has only the fields CONTRACT.md defines for that call.
+type heartbeatAck struct {
+	Lease   string `json:"lease"`
+	Expires string `json:"expires"`
+}
+
+type completeAck struct {
+	ID    string `json:"id"`
+	State string `json:"state"`
+	Next  string `json:"next,omitempty"`
+}
+
+type failAck struct {
+	ID    string `json:"id"`
+	State string `json:"state"`
+	Next  string `json:"next,omitempty"`
+	Held  bool   `json:"held,omitempty"`
+}
+
+type pauseAck struct {
+	ID    string `json:"id"`
+	State string `json:"state"`
+}
+
+// decodeExact decodes one JSON object into v and refuses null, a non-object,
+// a field v does not define, or anything after the value.
 func decodeExact(data []byte, v any) bool {
+	first := bytes.TrimLeft(data, " \t\r\n")
+	if len(first) == 0 || first[0] != '{' {
+		return false
+	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if dec.Decode(v) != nil {
@@ -201,7 +230,7 @@ func (h *HTTP) Lease(ctx context.Context) (*Grant, error) {
 		return nil, nil
 	case http.StatusOK:
 		var g Grant
-		if !decodeExact(body, &g) || g.Lease == "" {
+		if !decodeExact(body, &g) || g.Lease == "" || g.Attempt < 1 || g.Expires == "" {
 			return nil, ErrBadResponse
 		}
 		return &g, nil
@@ -209,13 +238,16 @@ func (h *HTTP) Lease(ctx context.Context) (*Grant, error) {
 	return nil, refused(status, body)
 }
 
-// result sends a call whose answer only has to be a 200.
-func (h *HTTP) result(ctx context.Context, path string, in any) error {
+// result sends a call that expects a 200 JSON object matching check.
+func (h *HTTP) result(ctx context.Context, path string, in any, check func([]byte) bool) error {
 	status, body, err := h.post(ctx, path, in)
 	if err != nil {
 		return err
 	}
 	if status == http.StatusOK {
+		if !check(body) {
+			return ErrBadResponse
+		}
 		return nil
 	}
 	return refused(status, body)
@@ -223,20 +255,38 @@ func (h *HTTP) result(ctx context.Context, path string, in any) error {
 
 // Heartbeat keeps a lease.
 func (h *HTTP) Heartbeat(ctx context.Context, lease string) error {
-	return h.result(ctx, PathHeartbeat, heartbeatRequest{Contract: catalog.ContractVersion, Lease: lease})
+	return h.result(ctx, PathHeartbeat, heartbeatRequest{Contract: catalog.ContractVersion, Lease: lease}, func(body []byte) bool {
+		var a heartbeatAck
+		return decodeExact(body, &a) && a.Lease == lease && a.Expires != ""
+	})
 }
 
 // Complete reports a finished step.
 func (h *HTTP) Complete(ctx context.Context, lease, state string, result json.RawMessage) error {
-	return h.result(ctx, PathComplete, completeRequest{Contract: catalog.ContractVersion, Lease: lease, State: state, Result: result})
+	return h.result(ctx, PathComplete, completeRequest{Contract: catalog.ContractVersion, Lease: lease, State: state, Result: result}, func(body []byte) bool {
+		var a completeAck
+		return decodeExact(body, &a) && a.ID != "" && a.State == state
+	})
 }
 
 // Fail reports E_TIMEOUT or E_PARSE for a step.
 func (h *HTTP) Fail(ctx context.Context, lease, code string) error {
-	return h.result(ctx, PathFail, failRequest{Contract: catalog.ContractVersion, Lease: lease, Code: code})
+	return h.result(ctx, PathFail, failRequest{Contract: catalog.ContractVersion, Lease: lease, Code: code}, func(body []byte) bool {
+		var a failAck
+		if !decodeExact(body, &a) || a.ID == "" || a.State == "" {
+			return false
+		}
+		if code == "E_PARSE" {
+			return a.Held && a.Next == ""
+		}
+		return code == "E_TIMEOUT" && !a.Held && a.Next != ""
+	})
 }
 
 // NeedsSubtool pauses an item no rule covers.
 func (h *HTTP) NeedsSubtool(ctx context.Context, lease string) error {
-	return h.result(ctx, PathNeedsSubtool, heartbeatRequest{Contract: catalog.ContractVersion, Lease: lease})
+	return h.result(ctx, PathNeedsSubtool, heartbeatRequest{Contract: catalog.ContractVersion, Lease: lease}, func(body []byte) bool {
+		var a pauseAck
+		return decodeExact(body, &a) && a.ID != "" && a.State == "needs_subtool"
+	})
 }
