@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http/cgi"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -106,7 +108,9 @@ func TestUsageAndInputErrors(t *testing.T) {
 		{"apply", "-catalog", catalogPath, "-decision", missing},
 		{"run", "-spool", t.TempDir()},
 		{"run", "-spool", t.TempDir(), "-muster-url", "not an address"},
+		{"run", "-spool", t.TempDir(), "-muster-url", "http://muster.example", "-plainforge-url", "not an address"},
 		{"run", "-spool", t.TempDir(), "-standalone"},
+		{"run", "-spool", t.TempDir(), "-standalone", "-plainforge-url", "http://plainforge.example"},
 		{"run", "-spool", t.TempDir(), "-standalone", "-catalog", catalogPath, "-items", t.TempDir()},
 		{"run", "-spool", t.TempDir(), "extra"},
 	}
@@ -419,3 +423,103 @@ func TestBinaryApply(t *testing.T) {
 }
 
 func ctx() context.Context { return context.Background() }
+
+func TestBinaryRunAgainstPlainforgeSmartHTTP(t *testing.T) {
+	if runtime.GOOS != "linux" || testing.Short() {
+		t.Skip("linux binary budget and git-http-backend test")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not installed")
+	}
+	execOut, err := exec.Command("git", "--exec-path").Output()
+	if err != nil {
+		t.Skipf("git --exec-path: %v", err)
+	}
+	backend := filepath.Join(strings.TrimSpace(string(execOut)), "git-http-backend")
+	if _, err := os.Stat(backend); err != nil {
+		t.Skipf("git-http-backend missing: %v", err)
+	}
+
+	gitRoot := t.TempDir()
+	bareDir := filepath.Join(gitRoot, plainforge.DefaultRepo)
+	for _, args := range [][]string{
+		{"init", "--bare", "--initial-branch=main", bareDir},
+		{"-C", bareDir, "config", "http.receivepack", "true"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	gitSrv := httptest.NewServer(&cgi.Handler{
+		Path:   backend,
+		Env:    []string{"GIT_PROJECT_ROOT=" + gitRoot, "GIT_HTTP_EXPORT_ALL=1"},
+		Stderr: io.Discard,
+	})
+	defer gitSrv.Close()
+
+	const items = 24
+	standInHub := plainforge.NewMemory()
+	m := muster.NewMemory(standInHub, time.Now, muster.LeaseLength)
+	for i := 0; i < items; i++ {
+		m.Seed(bigItem(i))
+	}
+	musterSrv := httptest.NewServer(muster.Handler(m, "made-up-token"))
+	defer musterSrv.Close()
+
+	root := t.TempDir()
+	spoolDir, cwd, tmp := filepath.Join(root, "spool"), filepath.Join(root, "cwd"), filepath.Join(root, "tmp")
+	for _, d := range []string{spoolDir, cwd, tmp} {
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tokenPath := filepath.Join(root, "token")
+	if err := os.WriteFile(tokenPath, []byte("made-up-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rssPath := filepath.Join(root, "maxrss")
+
+	cmd := exec.Command(measure, rssPath, binary, "run", "-once",
+		"-muster-url", musterSrv.URL,
+		"-plainforge-url", gitSrv.URL,
+		"-token-file", tokenPath,
+		"-spool", spoolDir,
+	)
+	cmd.Dir = cwd
+	cmd.Env = []string{"TMPDIR=" + tmp, "HOME=" + tmp, "CONTRACT_VERSION=v1"}
+	var logs bytes.Buffer
+	cmd.Stderr = &logs
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("worker with -plainforge-url failed: %v\n%s", err, logs.String())
+	}
+
+	if out, err := exec.Command("git", "-C", bareDir, "fsck", "--full", "--strict").CombinedOutput(); err != nil {
+		t.Fatalf("git fsck: %v\n%s", err, out)
+	}
+	committed, err := exec.Command("git", "-C", bareDir, "show", "refs/heads/main:"+muster.CatalogPath).Output()
+	if err != nil {
+		t.Fatalf("git show catalog/tools.json: %v", err)
+	}
+	parsed, err := catalog.Parse(committed, catalog.MaxBytes)
+	if err != nil || len(parsed.Entries) != items {
+		t.Fatalf("committed catalog has %d entries, err=%v", len(parsed.Entries), err)
+	}
+
+	rssRaw, err := os.ReadFile(rssPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var peakKiB int64
+	if _, err := fmt.Sscanf(string(rssRaw), "%d", &peakKiB); err != nil || peakKiB <= 0 {
+		t.Fatalf("unreadable maxrss %q: %v", rssRaw, err)
+	}
+	t.Logf("peak memory with Plainforge smart HTTP: %.1f MiB", float64(peakKiB)/1024)
+	if peakKiB > 30*1024 {
+		t.Errorf("peak memory %.1f MiB is over the 30 MiB budget", float64(peakKiB)/1024)
+	}
+	for _, banned := range []string{strings.TrimPrefix(musterSrv.URL, "http://"), strings.TrimPrefix(gitSrv.URL, "http://"), "127.0.0.1", "made-up-token", root} {
+		if strings.Contains(logs.String(), banned) {
+			t.Errorf("the log contains %q", banned)
+		}
+	}
+}

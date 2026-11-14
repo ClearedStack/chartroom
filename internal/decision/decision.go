@@ -371,9 +371,21 @@ func retire(ch *Change, existing *catalog.Entry, it *Item) (*Change, error) {
 // between the item and the catalog has no rule and is E_NEEDS_SUBTOOL: the
 // entry under that slug may belong to another item.
 func Apply(cat *catalog.Catalog, it *Item) (*Change, error) {
+	return ApplyCatalog(cat, nil, it)
+}
+
+// ApplyCatalog works out the change a leased item makes when the worker can
+// read both the whole catalog in Plainforge and the entry Chartroom
+// published for this same item before (own, from results.chartroom). It
+// enforces the whole-catalog slug collision and live merge-parent rules
+// while allowing an item to rebuild and replace its own earlier entry.
+func ApplyCatalog(cat *catalog.Catalog, own *catalog.Entry, it *Item) (*Change, error) {
 	ch := start(it)
 	existing := cat.Find(it.Slug)
 	ch.Before = existing
+	if own != nil && own.Slug != it.Slug {
+		return nil, cserr.At(cserr.UnsupportedCatalogState, "slug")
+	}
 	if it.Action == ActionRetire {
 		return retire(ch, existing, it)
 	}
@@ -382,7 +394,9 @@ func Apply(cat *catalog.Catalog, it *Item) (*Change, error) {
 		if catalog.Equal(existing, ch.After) {
 			return ch, nil
 		}
-		return nil, cserr.At(cserr.UnsupportedCatalogState, "slug")
+		if own == nil || !catalog.Equal(existing, own) {
+			return nil, cserr.At(cserr.UnsupportedCatalogState, "slug")
+		}
 	}
 	if it.Action == ActionMerge {
 		parent := cat.Find(it.Merge.Parent)

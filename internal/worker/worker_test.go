@@ -742,12 +742,13 @@ func TestWorkerHandlesLogbookPostRestartGrant(t *testing.T) {
 	}
 }
 
-// TestPackageBoundaries reads the import lists of the packages that run in
-// the worker. None may reach Plainforge, and only the Muster client may
-// touch the network: Chartroom talks to Muster and to nothing else.
+// TestPackageBoundaries reads the import lists of every internal package.
+// Only muster and plainforge may touch net/http, only worker and muster's
+// stand-in may import plainforge, and no package may use anything outside
+// the Go standard library.
 func TestPackageBoundaries(t *testing.T) {
 	network := map[string]bool{"net/http": true, "net/rpc": true, "net/smtp": true, "database/sql": true, "os/exec": true}
-	for _, pkg := range []string{"worker", "decision", "catalog", "spool", "cserr", "strictjson", "muster"} {
+	for _, pkg := range []string{"worker", "decision", "catalog", "spool", "cserr", "strictjson", "muster", "plainforge"} {
 		files, err := filepath.Glob(filepath.Join("..", pkg, "*.go"))
 		if err != nil || len(files) == 0 {
 			t.Fatalf("no files for package %s", pkg)
@@ -761,10 +762,10 @@ func TestPackageBoundaries(t *testing.T) {
 			}
 			for _, imp := range f.Imports {
 				path, _ := strconv.Unquote(imp.Path.Value)
-				if strings.HasSuffix(path, "/internal/plainforge") && !isTest && !standIn {
+				if strings.HasSuffix(path, "/internal/plainforge") && !isTest && !standIn && pkg != "worker" {
 					t.Errorf("%s imports Plainforge", file)
 				}
-				if network[path] && !isTest && pkg != "muster" {
+				if network[path] && !isTest && pkg != "muster" && pkg != "plainforge" {
 					t.Errorf("%s imports %s", file, path)
 				}
 				if strings.Contains(path, ".") && !strings.HasPrefix(path, "github.com/ClearedStack/chartroom/") {
@@ -779,5 +780,75 @@ func TestPackageBoundaries(t *testing.T) {
 	}
 	if strings.Contains(string(mod), "require") {
 		t.Error("go.mod has a dependency; its license and notice need checking and this test needs updating")
+	}
+}
+
+func TestWorkerWithPlainforgeHubEnforcesCatalogRulesAndRetriesCleanly(t *testing.T) {
+	r := newRig(t)
+	workerHub := plainforge.NewMemory()
+	r.cfg.Hub = workerHub
+
+	pubGrant := grantOf(t, "complete-publish")
+	r.muster.Seed(muster.Seed{ID: "PA-0101", State: "building", Lane: "urgent", Results: pubGrant.Results})
+
+	// Foreign item claiming the same slug ("sample-clause-finder") with a
+	// different summary must be paused as E_NEEDS_SUBTOOL once PA-0101 is live.
+	clashResults := map[string]json.RawMessage{
+		"waybill":   json.RawMessage(`{"slug":"sample-clause-finder","entry":{"title":"Another Tool","summary":"Clashes on slug."},"provenance":{"note":"Credit note.","links":["https://rules.example/part-1"]}}`),
+		"moldloft":  pubGrant.Results["moldloft"],
+		"shakedown": pubGrant.Results["shakedown"],
+	}
+	r.muster.Seed(muster.Seed{ID: "PA-0102", State: "building", Lane: "normal", Results: clashResults})
+
+	// Merge whose parent is PA-0101's live slug ("sample-clause-finder") succeeds,
+	// while a merge whose parent is missing ("nonexistent-parent") pauses.
+	mergeOK := map[string]json.RawMessage{
+		"countersign": json.RawMessage(`{"slug":"folded-helper","entry":{"title":"Folded Helper","summary":"Folded into sample-clause-finder."},"merge":{"parent":"sample-clause-finder","note":"Folded into parent calculator."}}`),
+	}
+	mergeMissingParent := map[string]json.RawMessage{
+		"countersign": json.RawMessage(`{"slug":"orphan-merge","entry":{"title":"Orphan Merge","summary":"Parent is not live."},"merge":{"parent":"nonexistent-parent","note":"Missing parent."}}`),
+	}
+	r.muster.Seed(muster.Seed{ID: "PA-0103", State: "merged", Lane: "normal", Results: mergeOK})
+	r.muster.Seed(muster.Seed{ID: "PA-0104", State: "merged", Lane: "backfill", Results: mergeMissingParent})
+
+	// Simulate both a transient Plainforge outage on the first read and a
+	// Muster stall after the first Plainforge commit, proving no duplicate
+	// catalog commit is made when Complete is retried.
+	workerHub.SetDown(true)
+	r.muster.StallResults(1)
+	r.clock.onSleep = func(n int) {
+		if n == 1 {
+			workerHub.SetDown(false)
+		}
+	}
+
+	r.run(context.Background(), r.muster)
+
+	commits := workerHub.Commits()
+	if len(commits) != 2 {
+		t.Fatalf("workerHub commits = %d, want 2 (publish + valid merge, zero duplicate on Muster retry)", len(commits))
+	}
+	rawCat, err := workerHub.ReadFile(context.Background(), muster.CatalogPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := catalog.Parse(rawCat, catalog.MaxBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Find("sample-clause-finder") == nil || parsed.Find("folded-helper") == nil {
+		t.Fatalf("catalog missing expected entries:\n%s", rawCat)
+	}
+	if parsed.Find("orphan-merge") != nil {
+		t.Fatalf("orphan-merge should not be committed:\n%s", rawCat)
+	}
+	for _, wantLog := range []string{
+		`"msg":"retry","code":"E_TIMEOUT","reason":"upstream_timeout"`,
+		`"id":"PA-0102","outcome":"needs_subtool","code":"E_NEEDS_SUBTOOL","reason":"unsupported_catalog_state","field":"slug"`,
+		`"id":"PA-0104","outcome":"needs_subtool","code":"E_NEEDS_SUBTOOL","reason":"unsupported_catalog_state","field":"merge.parent"`,
+	} {
+		if !strings.Contains(r.log.String(), wantLog) {
+			t.Errorf("log missing %s\n%s", wantLog, r.log.String())
+		}
 	}
 }

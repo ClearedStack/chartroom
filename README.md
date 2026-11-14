@@ -12,7 +12,7 @@
 
 ---
 
-> **Status: built, not deployed.** Chartroom runs and passes its tests alone, against in-memory stand-ins for Muster and Plainforge. It speaks Muster's contract v1 and replays that contract's saved examples, but it has never run against a real Muster or in a cluster. What is missing is listed under [Not yet done](#not-yet-done).
+> **Status: built, not deployed.** Chartroom runs and passes its tests alone, against in-memory stand-ins and HTTP/CGI test harnesses for Muster and Git smart HTTP (`git-http-backend`). It speaks Muster's contract v1, replays that contract's saved examples, and optionally commits `catalog/tools.json` to Plainforge over Git smart HTTP when `-plainforge-url` is set, though it has not yet been deployed to the cluster. What is missing is listed under [Not yet done](#not-yet-done).
 
 Chartroom is stage 08 of the ClearedStack pipeline. ClearedStack is an open pipeline that finds ideas for government-contracting tools, screens and scores them, and builds each one from the public rule. Chartroom is meant to be understood and used without the rest.
 
@@ -59,10 +59,10 @@ go run ./cmd/chartroom run -standalone \
   -spool   /tmp/cs-spool
 ```
 
-Run it as it runs in the cluster, against a Muster over HTTP:
+Run it as it runs in the cluster, against a Muster over HTTP (and optionally a Plainforge Git smart HTTP hub repository):
 
 ```sh
-chartroom run -muster-url http://… [-token-file FILE] [-spool /var/spool/cs] [-once]
+chartroom run -muster-url http://… [-plainforge-url http://…] [-token-file FILE] [-spool /var/spool/cs] [-once]
 ```
 
 Build the image and print the manifests with `ko`:
@@ -92,7 +92,7 @@ A test checks that every error reason Chartroom can give appears in at least one
 | --- | --- |
 | Publish, link, merge, retire | `internal/decision`; a test pins the four steps to Chartroom's rows in Muster's contract. See the first open question below for where that differs from the table in `SPEC.md`. |
 | Urgent before normal before backfill | Muster chooses the order and gives one step per lease call. The worker takes the steps as they come and sends each result before asking for the next. Results staged across a restart are sent in lane order. |
-| Muster only, over HTTP, with the ServiceAccount token | `internal/muster`. The token is read fresh for each call. A test reads the import lists: only this package touches the network, and nothing in the worker reaches Plainforge. |
+| Muster only, over HTTP, with the ServiceAccount token | `internal/muster` by default (`deploy/` sets only `MUSTER_URL`). The token is read fresh for each Muster call. `internal/plainforge` adds an opt-in Git smart HTTP client enabled only when `-plainforge-url` / `PLAINFORGE_URL` is set; a test pins `net/http` imports to `internal/muster` and `internal/plainforge` alone. |
 | Results staged in `/var/spool/cs` before Muster commits | `internal/spool`: written, synced and renamed into place, removed when Muster answers. |
 | `E_PARSE`: fails cleanly, sanitized report | Muster is sent the code and nothing else. The reason and the field name go to Chartroom's log; nothing from the data is repeated. |
 | `E_TIMEOUT`: stays staged, retries with backoff | 1 s doubling to 60 s, no random part. Leases with a staged result are kept by heartbeat. |
@@ -107,11 +107,11 @@ Both contracts Chartroom works to are in [`docs/contract.md`](docs/contract.md).
 ## Not yet done
 
 - **Never deployed to the cluster.** Chartroom speaks Muster's contract v1 at the commit named in [`testdata/contract/SOURCE.md`](testdata/contract/SOURCE.md), sets `MUSTER_URL` to `http://muster.clearedstack.svc.cluster.local:8080`, pins node affinity (`arm64`, excluding `cm3588-plus`), and enforces default-deny networking in `cs-workers` with egress only to Muster (`clearedstack` TCP `8080`) and cluster DNS (`kube-system` port `53`). Its placeholder `@sha256:0000...` image digest in [`deploy/chartroom.yaml`](deploy/chartroom.yaml) must be replaced with the Lazarette digest produced by `ko` / Keelworks at deploy time.
-- **Persistence of worker results across Muster restarts.** Muster's PostgreSQL 17 Logbook store currently keeps per-worker `results` (including `results.chartroom` and upstream worker blocks) in memory beside Logbook rather than in `core.*` tables, so a Muster restart loses `results` until Logbook and Muster persist them.
-- **Where the entry's content comes from.** No specification says which earlier worker records the slug, the title, the repository, the provenance or the attestation, or in what shape. Chartroom reads named blocks from earlier results ([`docs/contract.md`](docs/contract.md)). Until the workers before it (`Countersign`, `Waybill`, `Moldloft`, `Shakedown`, `Tidegauge`) write those blocks, real items will fail with `E_PARSE`.
+- **Persistence of worker results across Muster restarts.** Logbook migration `0010` defines `core.result` and `core.lease_outcome` in PostgreSQL 17; Muster's stateless SQL store wiring (`ClearedStack/muster` PR #4) must land so `results.chartroom` and upstream worker blocks survive Muster restarts.
+- **Where the entry's content comes from.** Chartroom reads named blocks from earlier results ([`docs/contract.md`](docs/contract.md)). `Moldloft` (`publish`), `Shakedown` (`attestation`), and `Tidegauge` (`retire`) now emit Chartroom's exact blocks on `main`; `Waybill` (`slug`, `entry`, `provenance` for built items) and `Sextant` + `Countersign` (`slug`, `entry`, `link` + `provenance`, or `merge`) still need to emit their blocks before live items complete without `E_PARSE`.
 - **Priority class.** The specification says Chartroom runs under the Standard priority class and does not give the class's name. The manifest does not set one.
-- **The five Shakedown conditions.** The specification gives the number and not the names. Chartroom checks there are five, each different, all passed.
-- **Writing to Plainforge and mirroring to GitHub.** Chartroom sends the catalog entry to Muster as `result` on `POST /v1/complete`; nothing yet carries `results.chartroom` from Muster into Plainforge's hub repository or mirrors public tool repositories to GitHub.
+- **The five Shakedown conditions.** `ClearedStack/shakedown` emits five distinct conditions on `main`; `SPEC.md` gives the count and not fixed condition names, so Chartroom checks there are five, each different, all passed.
+- **Writing to Plainforge and mirroring to GitHub.** By default (`-plainforge-url` unset), Chartroom sends the catalog entry only to Muster as `result` on `POST /v1/complete` per `SPEC.md`. Passing `-plainforge-url` (or `PLAINFORGE_URL`) enables `internal/plainforge`'s Git smart HTTP client to read and commit `catalog/tools.json` directly on `refs/heads/main` in `clearedstack.com.git` before completing the lease; turning that mode on in-cluster requires adding TCP `8080` egress to `plainforge` in [`deploy/networkpolicy.yaml`](deploy/networkpolicy.yaml).
 - **The spool volume** is an `emptyDir`: it survives a container restart and not the deletion of the pod. Nothing is lost when that happens, because Muster offers the step again and the result is the same, but it is weaker than the specification's wording suggests.
 
 ## Where the specifications needed a decision
@@ -121,9 +121,9 @@ Each of these is a proposed change to `SPEC.md`, to the registry or to Muster's 
 1. **The state table.** `SPEC.md` has Chartroom move an item from `scored` to `linked` or `merged` and from `live` to `retired`. Muster's contract has Countersign and Tidegauge make those moves, and Chartroom then list an item that is already `linked`, `merged` or `retired`, leaving the state as it is. Built as Muster has it, since Muster refuses anything else. *Proposed:* change the table in `SPEC.md` to Chartroom's four rows in Muster's contract.
 2. **Pausing.** `SPEC.md` says an item with no rule is paused in `needs_subtool`. Muster's state table allows a pause only from `recorded`, `observed` and `approved`, none of which Chartroom ever holds, so every `needs_subtool` call from Chartroom is refused with `move_not_allowed`. Chartroom makes the call, drops the result when it is refused and publishes nothing. The item is then offered again each time its lease runs out, with the same end. *Proposed:* let Muster pause from `building`, `linked`, `merged` and `retired`, or say what Chartroom should do instead.
 3. **What Muster learns of a failure.** `SPEC.md` says Chartroom reports a sanitized error for Bellbuoy to deduplicate. Muster's `fail` call carries one of two codes and nothing else. The reason stays in Chartroom's log. *Proposed:* say so, or give `fail` a field for a fixed reason.
-4. **Who writes to Plainforge.** The registry says Chartroom "writes catalog entries to the hub repository in Plainforge". `SPEC.md` says it talks only to Muster. Built as `SPEC.md` has it: the entry is the `result` of the `complete` call, and Muster keeps it. Nothing yet says who carries it from there to the hub repository. Chartroom's stand-in for Muster does it, so the tests have a catalog to read. *Proposed:* change the registry line, and name the component that writes the hub repository.
-5. **The content of an entry.** See "Where the entry's content comes from" above. *Proposed:* add the blocks in [`docs/contract.md`](docs/contract.md) to the specifications of the workers that would supply them. In particular, `SPEC.md` says the provenance note is stamped by Waybill, but in Muster's table a linked item never reaches Waybill.
-6. **What the worker cannot see.** Muster hands over one item, not the catalog. So the worker cannot check that a merge's parent is a live entry, or that a slug is not already used by another item. The `apply` command, which is given the whole catalog, checks both. *Proposed:* say which component makes those checks.
+4. **Who writes to Plainforge.** The registry says Chartroom "writes catalog entries to the hub repository in Plainforge". `SPEC.md` says it talks only to Muster. Default deployments follow `SPEC.md` (`-plainforge-url` unset: Muster receives `results.chartroom` and Chartroom opens no socket to Plainforge), while `-plainforge-url` / `PLAINFORGE_URL` provides opt-in Git smart HTTP commits of `catalog/tools.json` to `refs/heads/main` on Plainforge (`ClearedStack/plainforge` already allows TCP `8080` ingress from both `muster` and `chartroom`). *Proposed:* settle whether Muster or Chartroom (`-plainforge-url`) is the canonical hub writer and update `SPEC.md` or `component.json` to match.
+5. **The content of an entry.** See "Where the entry's content comes from" above and the upstream producer map in [`docs/contract.md`](docs/contract.md). `Moldloft`, `Shakedown`, and `Tidegauge` already emit those blocks; `Waybill`, `Sextant`, and `Countersign` still need them. *Proposed:* add the blocks in [`docs/contract.md`](docs/contract.md) to the specifications of `Waybill`, `Sextant`, and `Countersign`.
+6. **What the worker cannot see.** A Muster-only worker is handed one item rather than the whole catalog, so it cannot check that a merge's parent is a `live` entry or that a slug is not already used by another item. Both `chartroom apply` and `chartroom run -plainforge-url …` read the whole catalog and enforce both rules (`decision.ApplyCatalog`). *Proposed:* state whether Plainforge whole-catalog validation runs in Chartroom (`-plainforge-url`) or in Muster.
 7. **Public links.** Chartroom refuses a catalog link that is not `https`, carries a user name or password, or points at an IP address or a private-network name. The specification does not ask for this. *Proposed:* add it to the security section.
 8. **Numbers.** Heartbeat (20 s), call timeout (10 s), backoff (1 s to 60 s) and poll interval (5 s) are defaults chosen here. *Proposed:* state them, or state that the worker chooses.
 
@@ -134,13 +134,13 @@ Each of these is a proposed change to `SPEC.md`, to the registry or to Muster's 
 | [`SPEC.md`](SPEC.md) | The specification: what Chartroom does, its interfaces, how it fails and how it is kept safe. |
 | [`PROMPT.md`](PROMPT.md) | The prompt this was built from. |
 | [`component.json`](component.json) | This component’s entry in the ClearedStack naming registry. |
-| [`docs/contract.md`](docs/contract.md) | The calls to Muster, what Chartroom reads from earlier workers, what it sends back, and the errors. |
+| [`docs/contract.md`](docs/contract.md) | The calls to Muster and optional Plainforge, what Chartroom reads from earlier workers, what it sends back, and the errors. |
 | [`cmd/chartroom`](cmd/chartroom) | The command: `apply`, `run`, `version`. |
 | [`internal/decision`](internal/decision) | The four rules. |
 | [`internal/catalog`](internal/catalog) | The catalog file: strict reading, canonical writing, field rules. |
 | [`internal/worker`](internal/worker), [`internal/spool`](internal/spool) | The loop and the on-disk staging. |
 | [`internal/muster`](internal/muster) | The interface to Muster, its HTTP client, the in-memory stand-in and the replay of Muster's contract examples. |
-| [`internal/plainforge`](internal/plainforge) | The interface to the hub repository and its in-memory stand-in. Used by the Muster stand-in only. |
+| [`internal/plainforge`](internal/plainforge) | The interface to the hub repository, its Git smart HTTP client (`-plainforge-url`), and its in-memory stand-in. |
 | [`internal/cserr`](internal/cserr) | The three error codes and every reason under them. |
 | [`testdata/`](testdata) | The saved examples, Chartroom's own and Muster's. |
 | [`deploy/`](deploy), [`.ko.yaml`](.ko.yaml) | The Kubernetes manifest and the image build. |
