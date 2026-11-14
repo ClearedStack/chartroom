@@ -53,7 +53,7 @@ While a result waits in the spool, its lease is kept with a heartbeat every 20 s
 
 ### What reaches Muster when a step is not completed
 
-`fail` carries the code and nothing else, and `needs_subtool` carries no code at all. The reason and the field stay in Chartroom's log. Chartroom never sends `fail` with `E_TIMEOUT`: nothing but Muster itself can be slow for it.
+`fail` carries the code and nothing else, and `needs_subtool` carries no code at all. The reason and the field stay in Chartroom's log. Chartroom never sends `fail` with `E_TIMEOUT`: a slow Muster or Plainforge answer stays staged (or uncompleted on the lease) and is tried again with backoff.
 
 ## What Chartroom needs from earlier workers
 
@@ -108,6 +108,63 @@ A note is 1 to 2000 characters and may hold line breaks. A **public link** is an
 
 Blocks are read strictly: invalid UTF-8, a duplicate key, a field not listed here or a key in another letter case is `E_PARSE`. The provenance block has exactly two fields, so a raw snapshot cannot be carried through it.
 
+### Upstream producer map (by pipeline stage)
+
+Chartroom's block scanner is intentionally producer-agnostic, provided each block appears in **exactly one** earlier worker's result. Across the ClearedStack pipeline stages, the blocks map to upstream workers as follows:
+
+| Chartroom step | Upstream worker | Blocks emitted in `results.<worker>` | Status across sibling repos |
+| --- | --- | --- | --- |
+| publish (`building -> live`) | `waybill` | `slug`, `entry`, `provenance` | Needed in `ClearedStack/waybill` (`waybill` must own `slug` and `entry` on built items, or omit them if `sextant` already emitted them). |
+| publish (`building -> live`) | `moldloft` | `publish` (`{"repository": "https://github.com/clearedstack/<slug>"}`) | Implemented on `ClearedStack/moldloft` `main`. |
+| publish (`building -> live`) | `shakedown` | `attestation` (five passed `conditions`) | Implemented on `ClearedStack/shakedown` `main`. |
+| link (`linked -> linked`) | `sextant` + `countersign` | `slug`, `entry` (from `sextant` or `countersign`, in one result only); `link`, `provenance` (from `countersign`) | Needed in `ClearedStack/sextant` and `ClearedStack/countersign`. |
+| merge (`merged -> merged`) | `sextant` + `countersign` | `slug`, `entry` (from `sextant` or `countersign`, in one result only); `merge` and optional `provenance` (from `countersign`) | Needed in `ClearedStack/sextant` and `ClearedStack/countersign`. |
+| retire (`retired -> retired`) | `tidegauge` | `retire` (`{"reason": "repealed" \| "superseded", "note": "..."}`) | Implemented on `ClearedStack/tidegauge` `main` (paired with Chartroom's prior `results.chartroom`). |
+
+Because `scored -> linked` and `scored -> merged` items move straight from Countersign to Chartroom without passing through Waybill, `sextant` and `countersign` supply their catalog blocks directly. Note that if `sextant` emits `slug` and `entry` on every `observed -> scored` item, `waybill` must **not** repeat `slug` or `entry` on `approved -> specced` items (otherwise both `results.sextant` and `results.waybill` would hold `slug` and `entry`, triggering `E_NEEDS_SUBTOOL` `unsupported_value`); conversely, if `waybill` owns `slug` and `entry` for built items, `countersign` should emit `slug` and `entry` only when moving `scored -> linked` or `scored -> merged`.
+
+Reference `results` shape for a `linked` item (`countersign` supplying `slug`, `entry`, `link` and `provenance` alongside its own decision fields, which Chartroom ignores):
+
+```json
+"results": {
+  "countersign": {
+    "outcome": "link",
+    "slug": "far-part-15-index",
+    "entry": {
+      "title": "FAR Part 15 Reference Index",
+      "summary": "Public index of negotiation clauses and thresholds."
+    },
+    "link": {
+      "name": "Example Open Index",
+      "url": "https://tools.example/far-part-15-index"
+    },
+    "provenance": {
+      "note": "Linked to existing public tool from public acquisition rules.",
+      "links": ["https://rules.example/far/part-15"]
+    }
+  }
+}
+```
+
+Reference `results` shape for a `merged` item (`provenance` is optional on `merge`):
+
+```json
+"results": {
+  "countersign": {
+    "outcome": "merge",
+    "slug": "clause-threshold-helper",
+    "entry": {
+      "title": "Clause Threshold Helper",
+      "summary": "Folded into Sample Clause Finder."
+    },
+    "merge": {
+      "parent": "sample-clause-finder",
+      "note": "Covers the same clause table as sample-clause-finder."
+    }
+  }
+}
+```
+
 ## What Chartroom sends back
 
 The `result` of a `complete` call is the catalog entry and nothing else:
@@ -126,6 +183,18 @@ The `result` of a `complete` call is the catalog entry and nothing else:
 `status` is `live`, `linked`, `merged` or `retired`. A `linked` entry has `link` in place of `repository`. A `merged` entry has `merge` and neither. A `retired` entry is the live entry as it was, with `status` changed and a `retirement` block (`reason`, `note`) added: that block is the historical note.
 
 Muster keeps the result as `results.chartroom`, replacing the one before. So a publish, link or merge always sends the whole new entry, and a retirement starts from the entry kept there. An entry carries nothing else from the lease: no attestation, no item identifier, no state, nothing from any other worker.
+
+## Talking to Plainforge (optional `-plainforge-url`)
+
+By default (`-plainforge-url` and `PLAINFORGE_URL` unset), `chartroom run` talks **only** to Muster, matching `SPEC.md` and the default-deny `NetworkPolicy` in `deploy/networkpolicy.yaml`.
+
+When `-plainforge-url` (or `PLAINFORGE_URL`) is explicitly set to the hub repository URL (for example `http://plainforge.clearedstack.svc.cluster.local:8080/clearedstack.com.git`), `chartroom run` also reads and commits `catalog/tools.json` on `refs/heads/main` over Git smart HTTP using `internal/plainforge`:
+
+1. **Protocol posture.** Four calls only: `GET <repo>/info/refs?service=git-upload-pack`, `POST <repo>/git-upload-pack` (`multi_ack_detailed`), `GET <repo>/info/refs?service=git-receive-pack`, and `POST <repo>/git-receive-pack` (`report-status`). Redirects and HTTP proxies are disabled, packs and objects are size-bounded, and only the current tip commit, reachable trees and target file blob are retained in memory.
+2. **Whole-catalog checks before staging.** While evaluating a lease, Chartroom reads `catalog/tools.json` from `refs/heads/main` (an unborn branch or missing `catalog/tools.json` starts from an empty catalog) and runs `decision.ApplyCatalog`. Foreign slug collisions and `merge.parent` slugs that are not `live` in the hub catalog fail closed with `E_NEEDS_SUBTOOL` (`unsupported_catalog_state`), while an item is permitted to rebuild and replace its own earlier entry (`results.chartroom`).
+3. **Idempotent commit before Muster complete.** When flushing a staged `complete` record, Chartroom writes the canonical `catalog/tools.json` commit to `refs/heads/main` before calling `POST /v1/complete`. If the exact target entry is already present in `catalog/tools.json` on `refs/heads/main`, Chartroom skips creating a duplicate commit and proceeds directly to `POST /v1/complete`.
+4. **Failure handling.** An unreachable hub, HTTP `429`/`5xx`, or concurrent non-fast-forward ref update (`ErrUnavailable`) is treated as `E_TIMEOUT` (`upstream_timeout`) and retried with the same 1 s to 60 s doubling backoff while heartbeating the lease. Corrupt hub catalog or Git object data fails closed with `E_PARSE` (`invalid_catalog`), and a permanent protocol refusal fails closed with `E_PARSE` (`upstream_refused`).
+5. **Cluster network policy.** `deploy/chartroom.yaml` and `deploy/networkpolicy.yaml` leave Plainforge off by default. Enabling `-plainforge-url` in-cluster requires adding TCP `8080` egress from `chartroom` in `cs-workers` to `app.kubernetes.io/name: plainforge` in namespace `clearedstack` (`ClearedStack/plainforge` already allows TCP `8080` ingress from `chartroom` in `cs-workers`).
 
 ## The `apply` command's files
 
@@ -151,11 +220,11 @@ A **decision file** is the item as one document:
 
 A **catalog file** is `{"contract": "v1", "entries": [ … ]}`, written the same way every time: entries in slug order, two-space indent, no HTML escaping, one trailing newline.
 
-Because it sees the whole catalog, `apply` checks two things the worker cannot:
+Because it sees the whole catalog, `apply` (and `chartroom run` when `-plainforge-url` is set) checks two things a Muster-only worker cannot:
 
 | Catalog before | Result |
 | --- | --- |
-| An entry with this slug that differs from what the item would make | `E_NEEDS_SUBTOOL`. It may belong to another item. |
+| An entry with this slug that differs from what the item would make (and is not this item's own prior entry) | `E_NEEDS_SUBTOOL`. It belongs to another item. |
 | A merge whose parent slug is not a `live` entry | `E_NEEDS_SUBTOOL` |
 
 An item whose result is already in the catalog changes nothing (`"changed": false`).
@@ -173,13 +242,13 @@ Three codes, each with a fixed list of reasons. Every message is a constant; not
 | `E_PARSE` | `invalid_metadata` | A field is missing or breaks its rule, or a block is missing. |
 | `E_PARSE` | `missing_provenance` | The provenance block is absent, or has a blank note or no links. |
 | `E_PARSE` | `missing_attestation` | The attestation is absent or does not show five distinct passed conditions. |
-| `E_PARSE` | `invalid_catalog` | The catalog, or Chartroom's own earlier entry, cannot be read or has the wrong shape. |
-| `E_PARSE` | `upstream_refused` | Muster refused a call in a way that sending it again cannot cure. |
+| `E_PARSE` | `invalid_catalog` | The catalog (on disk or in Plainforge), or Chartroom's own earlier entry, cannot be read or has the wrong shape. |
+| `E_PARSE` | `upstream_refused` | Muster or Plainforge refused a call in a way that sending it again cannot cure. |
 | `E_NEEDS_SUBTOOL` | `unsupported_entry_type` | A step that is not an item, an action or an entry status this build does not know. |
 | `E_NEEDS_SUBTOOL` | `schema_version_mismatch` | A contract version other than `v1`: in a file, in `CONTRACT_VERSION`, or as Muster's answer. |
 | `E_NEEDS_SUBTOOL` | `unsupported_transition` | The item is in a state Chartroom holds no item in. |
 | `E_NEEDS_SUBTOOL` | `unsupported_catalog_state` | The catalog is in a state the action has no rule for. |
 | `E_NEEDS_SUBTOOL` | `unsupported_value` | A retirement reason or a lane this build does not know, or a block found in two results. |
-| `E_TIMEOUT` | `upstream_timeout` | Muster did not acknowledge a call. |
+| `E_TIMEOUT` | `upstream_timeout` | Muster or Plainforge did not acknowledge a call (or a concurrent ref update raced on Plainforge). |
 
 Printed form: `CODE reason [field]: message`. `chartroom apply` exits 3 for `E_PARSE`, 4 for `E_NEEDS_SUBTOOL`, 2 for a usage error and 1 if it cannot write.

@@ -61,7 +61,7 @@ func main() {
 
 const usage = `usage:
   chartroom apply -catalog FILE -decision FILE [-write]
-  chartroom run -muster-url URL [-token-file FILE] [-spool DIR] [-once]
+  chartroom run -muster-url URL [-plainforge-url URL] [-token-file FILE] [-spool DIR] [-once]
   chartroom run -standalone -catalog FILE -items DIR [-spool DIR]
   chartroom version
 `
@@ -190,6 +190,7 @@ func replaceFile(path string, data []byte) error {
 func cmdRun(args []string, getenv func(string) string, stdout, stderr io.Writer) int {
 	fs := newFlags("run")
 	musterURL := fs.String("muster-url", getenv("MUSTER_URL"), "")
+	plainforgeURL := fs.String("plainforge-url", getenv("PLAINFORGE_URL"), "")
 	tokenFile := fs.String("token-file", defaultTokenFile, "")
 	spoolDir := fs.String("spool", spool.DefaultDir, "")
 	once := fs.Bool("once", false, "")
@@ -215,6 +216,9 @@ func cmdRun(args []string, getenv func(string) string, stdout, stderr io.Writer)
 	defer stop()
 
 	if *standalone {
+		if *plainforgeURL != "" || *musterURL != "" {
+			return usageError(stderr, "run -standalone takes no network addresses")
+		}
 		if *catalogPath == "" || *itemsDir == "" {
 			return usageError(stderr, "run -standalone needs -catalog and -items")
 		}
@@ -226,6 +230,13 @@ func cmdRun(args []string, getenv func(string) string, stdout, stderr io.Writer)
 	client, err := muster.NewHTTP(*musterURL, *tokenFile, cfg.CallTimeout)
 	if err != nil {
 		return usageError(stderr, muster.ErrBadAddress.Error())
+	}
+	if *plainforgeURL != "" {
+		hub, err := plainforge.NewHTTP(*plainforgeURL, cfg.CallTimeout)
+		if err != nil {
+			return usageError(stderr, plainforge.ErrBadAddress.Error())
+		}
+		cfg.Hub = hub
 	}
 	cfg.Once = *once
 	log.Info("started", "version", Version, "contract", catalog.ContractVersion, "staged", sp.Len())
