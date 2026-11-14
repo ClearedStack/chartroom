@@ -12,13 +12,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/ClearedStack/chartroom/internal/catalog"
 	"github.com/ClearedStack/chartroom/internal/plainforge"
 )
 
@@ -200,7 +200,7 @@ func TestReadFileReadsMainNotTheBranch(t *testing.T) {
 func TestBadSlugFailsClosedWithNoRequest(t *testing.T) {
 	rec, _ := newRecorder(t)
 	hub := mustHub(t, rec)
-	for _, slug := range []string{"", "Alpha", "-alpha", "a b", "a/b", "a..b", "main/../x", "a\x00b", "alpha.lock", "é", strings.Repeat("a", 64), "../main"} {
+	for _, slug := range []string{"", "Alpha", "-alpha", "a b", "a/b", "a..b", "main/../x", "a\x00b", "alpha.lock", "é", strings.Repeat("a", catalog.MaxSlugBytes+1), "../main", "a-", "a--b"} {
 		err := hub.WriteFile(context.Background(), slug, "catalog/tools.json", []byte("{}\n"), "m")
 		if !errors.Is(err, plainforge.ErrRefused) {
 			t.Errorf("slug %q: err = %v, want ErrRefused", slug, err)
@@ -210,7 +210,7 @@ func TestBadSlugFailsClosedWithNoRequest(t *testing.T) {
 		t.Fatalf("%d requests were sent for bad slugs, want none", n)
 	}
 	// The longest and shortest good slugs work.
-	for _, slug := range []string{"a", "0", strings.Repeat("a", 63), "a-b-0"} {
+	for _, slug := range []string{"a", "0", strings.Repeat("a", catalog.MaxSlugBytes), "a-b-0"} {
 		if err := hub.WriteFile(context.Background(), slug, "catalog/tools.json", []byte("{}\n"), "m"); err != nil {
 			t.Errorf("slug %q: %v", slug, err)
 		}
@@ -285,23 +285,37 @@ func TestUnauthorizedAndForbiddenAreRefusedWithAFixedMessage(t *testing.T) {
 	}
 }
 
-func TestValidSlugMatchesTheRule(t *testing.T) {
-	re := regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
-	for _, s := range []string{"a", "a-", "-a", "ab-c", "A", "a_b", "", strings.Repeat("a", 63), strings.Repeat("a", 64), "a\n", "é"} {
-		if got := plainforge.ValidSlug(s); got != re.MatchString(s) {
-			t.Errorf("ValidSlug(%q) = %v, want %v", s, got, re.MatchString(s))
+func TestSlugRuleIsTheCatalogRule(t *testing.T) {
+	max := strings.Repeat("a", catalog.MaxSlugBytes)
+	over := max + "a"
+	for _, s := range []string{"a", "a-", "-a", "ab-c", "a--b", "A", "a_b", "", max, over, "a\n", "é"} {
+		if got := plainforge.ValidSlug(s); got != catalog.ValidSlug(s) {
+			t.Errorf("ValidSlug(%q) = %v, catalog says %v", s, got, catalog.ValidSlug(s))
 		}
+	}
+	if !plainforge.ValidSlug(max) || !catalog.ValidSlug(max) {
+		t.Error("a slug of the catalog maximum must pass both checks")
+	}
+	if plainforge.ValidSlug(over) || catalog.ValidSlug(over) {
+		t.Error("a slug one byte over the maximum must fail both checks")
 	}
 }
 
+// FuzzValidSlug checks the plainforge and catalog slug checks agree, and that
+// a stand-in write is refused exactly when the catalog refuses the slug.
 func FuzzValidSlug(f *testing.F) {
-	re := regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
-	for _, s := range []string{"", "a", "a-b", "-a", "A", "a\n", strings.Repeat("a", 64), "a\x00", "é", "refs/heads/main"} {
+	for _, s := range []string{"", "a", "a-b", "-a", "a-", "a--b", "A", "a\n", strings.Repeat("a", 64), strings.Repeat("a", 65), "a\x00", "é", "refs/heads/main"} {
 		f.Add(s)
 	}
+	mem := plainforge.NewMemory()
 	f.Fuzz(func(t *testing.T, s string) {
-		if got := plainforge.ValidSlug(s); got != re.MatchString(s) {
-			t.Fatalf("ValidSlug(%q) = %v, want %v", s, got, re.MatchString(s))
+		want := catalog.ValidSlug(s)
+		if got := plainforge.ValidSlug(s); got != want {
+			t.Fatalf("ValidSlug(%q) = %v, catalog says %v", s, got, want)
+		}
+		err := mem.WriteFile(context.Background(), s, "catalog/tools.json", []byte("{}\n"), "m")
+		if (err == nil) != want {
+			t.Fatalf("Memory.WriteFile(%q) = %v, slug valid = %v", s, err, want)
 		}
 	})
 }
